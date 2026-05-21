@@ -4,7 +4,7 @@
 
 A ZMK input processor for using an absolute-reporting trackpad as a small joystick-style pointing surface.
 
-`zmk,input-processor-padstick` stores the first `INPUT_ABS_X` and `INPUT_ABS_Y` values after `INPUT_BTN_TOUCH` as the touch origin. Later absolute reports are converted to `INPUT_REL_X` and `INPUT_REL_Y` based on distance from that origin.
+`zmk,input-processor-padstick` ignores the first complete absolute report frame after `INPUT_BTN_TOUCH`, then stores the next `INPUT_ABS_X` and `INPUT_ABS_Y` values as the touch origin. Later absolute reports are converted to `INPUT_REL_X` and `INPUT_REL_Y` based on distance from that origin.
 
 ## Features
 
@@ -47,16 +47,16 @@ Include the standard helper in your shield's `.overlay` or `.zmk.dts`:
 ```dts
 /* Configure the padstick processor */
 &padstick {
-    x-deadzone = <24>;
-    y-deadzone = <24>;
-    x-scale = <256>;
-    y-scale = <256>;
-    x-accel-range = <96>;
-    y-accel-range = <96>;
-    x-accel-scale = <512>;
-    y-accel-scale = <512>;
-    max-x = <80>;
-    max-y = <80>;
+    x-deadzone = <48>;
+    y-deadzone = <48>;
+    x-scale = <8>;
+    y-scale = <8>;
+    x-accel-range = <464>;
+    y-accel-range = <464>;
+    x-accel-scale = <12>;
+    y-accel-scale = <12>;
+    max-x = <16>;
+    max-y = <16>;
     suppress-abs;
     suppress-btn-touch;
 };
@@ -67,14 +67,17 @@ Include the standard helper in your shield's `.overlay` or `.zmk.dts`:
 };
 ```
 
+The defaults are tuned for a 1024 x 1024 absolute trackpad. A 48-count deadzone gives the touch origin a small play area, and the remaining roughly 464 counts from center to edge are used for the smooth acceleration ramp.
+
 ### 3. Motion Semantics
 
 - `BTN_TOUCH` press resets the touch origin and sub-pixel remainders.
-- The first `ABS_X` and `ABS_Y` values after touch become the origin coordinates.
+- The first complete `ABS_X` / `ABS_Y` frame after touch is suppressed as an origin-settle frame.
+- The next `ABS_X` and `ABS_Y` values become the origin coordinates.
 - Movement inside `x-deadzone` / `y-deadzone` emits zero and clears the axis remainder.
 - Movement outside the deadzone is scaled as fixed point where `256` is `1.0x`.
 - Acceleration ramps smoothly from `x-scale` / `y-scale` to `x-accel-scale` / `y-accel-scale` across `x-accel-range` / `y-accel-range`.
-- Fractional output is accumulated per axis. For example, with `x-scale = <128>`, repeated 1-count movement outside the deadzone emits `REL_X = 1` every second event.
+- Fractional output is accumulated per axis. For example, with `x-scale = <8>`, repeated 1-count movement outside the deadzone emits `REL_X = 1` every 32 events.
 - Output is clamped by `max-x` / `max-y`; saturation clears the axis remainder.
 
 ## Debug Logging
@@ -87,16 +90,16 @@ Debug logs include touch resets, stored origin coordinates, raw ABS coordinates,
 
 | Property | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `x-deadzone` | int | 20 | Absolute X counts around the touch origin that emit zero. |
-| `y-deadzone` | int | 20 | Absolute Y counts around the touch origin that emit zero. |
-| `x-scale` | int | 256 | X fine movement scale after the deadzone. `256` is `1.0x`. |
-| `y-scale` | int | 256 | Y fine movement scale after the deadzone. `256` is `1.0x`. |
-| `x-accel-range` | int | 96 | X counts after the deadzone used to ramp smoothly from `x-scale` to `x-accel-scale`. |
-| `y-accel-range` | int | 96 | Y counts after the deadzone used to ramp smoothly from `y-scale` to `y-accel-scale`. |
-| `x-accel-scale` | int | 512 | X scale reached at the end of `x-accel-range`. `512` is `2.0x`. |
-| `y-accel-scale` | int | 512 | Y scale reached at the end of `y-accel-range`. `512` is `2.0x`. |
-| `max-x` | int | 127 | Maximum absolute `REL_X` value emitted by this processor. |
-| `max-y` | int | 127 | Maximum absolute `REL_Y` value emitted by this processor. |
+| `x-deadzone` | int | 48 | Absolute X counts around the touch origin that emit zero. |
+| `y-deadzone` | int | 48 | Absolute Y counts around the touch origin that emit zero. |
+| `x-scale` | int | 8 | X fine movement scale after the deadzone. `256` is `1.0x`. |
+| `y-scale` | int | 8 | Y fine movement scale after the deadzone. `256` is `1.0x`. |
+| `x-accel-range` | int | 464 | X counts after the deadzone used to ramp smoothly from `x-scale` to `x-accel-scale`. |
+| `y-accel-range` | int | 464 | Y counts after the deadzone used to ramp smoothly from `y-scale` to `y-accel-scale`. |
+| `x-accel-scale` | int | 12 | X scale reached at the end of `x-accel-range`. `256` is `1.0x`. |
+| `y-accel-scale` | int | 12 | Y scale reached at the end of `y-accel-range`. `256` is `1.0x`. |
+| `max-x` | int | 16 | Maximum absolute `REL_X` value emitted by this processor. |
+| `max-y` | int | 16 | Maximum absolute `REL_Y` value emitted by this processor. |
 | `invert-x` | bool | false | Invert generated `REL_X` direction. |
 | `invert-y` | bool | false | Invert generated `REL_Y` direction. |
 | `suppress-abs` | bool | false | Suppress unconverted absolute events so ABS reports do not leak downstream. |

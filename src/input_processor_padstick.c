@@ -20,7 +20,8 @@ LOG_MODULE_REGISTER(input_processor_padstick, CONFIG_ZMK_LOG_LEVEL);
 #define PADSTICK_INVALID_CODE 0xFFF
 #define PADSTICK_SCALE_MAX 4096
 #define PADSTICK_SCALE_SHIFT 8
-#define PADSTICK_SCALE_ONE BIT(PADSTICK_SCALE_SHIFT)
+/* Keep signed so negative fixed-point totals divide as negative values. */
+#define PADSTICK_SCALE_ONE ((int32_t)1 << PADSTICK_SCALE_SHIFT)
 
 struct padstick_config {
 	int32_t x_deadzone;
@@ -46,6 +47,7 @@ struct padstick_data {
 	int32_t x_remainder;
 	int32_t y_remainder;
 	bool touching;
+	bool skip_origin_frame;
 };
 
 static void padstick_reset_contact(struct padstick_data *data) {
@@ -53,6 +55,7 @@ static void padstick_reset_contact(struct padstick_data *data) {
 	data->origin_y = PADSTICK_COORD_UNSET;
 	data->x_remainder = 0;
 	data->y_remainder = 0;
+	data->skip_origin_frame = true;
 }
 
 static int32_t padstick_abs_i32(int32_t value) {
@@ -191,6 +194,14 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 	}
 
 	if (event->code == INPUT_ABS_X) {
+		if (data->skip_origin_frame) {
+			LOG_DBG("x skip origin-settle abs=%d sync=%d", event->value, event->sync);
+			if (event->sync) {
+				data->skip_origin_frame = false;
+			}
+			return padstick_suppress_event(event);
+		}
+
 		if (data->origin_x == PADSTICK_COORD_UNSET) {
 			data->origin_x = event->value;
 			LOG_DBG("x origin=%d", data->origin_x);
@@ -208,6 +219,14 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 	}
 
 	if (event->code == INPUT_ABS_Y) {
+		if (data->skip_origin_frame) {
+			LOG_DBG("y skip origin-settle abs=%d sync=%d", event->value, event->sync);
+			if (event->sync) {
+				data->skip_origin_frame = false;
+			}
+			return padstick_suppress_event(event);
+		}
+
 		if (data->origin_y == PADSTICK_COORD_UNSET) {
 			data->origin_y = event->value;
 			LOG_DBG("y origin=%d", data->origin_y);
@@ -280,16 +299,16 @@ static const struct zmk_input_processor_driver_api padstick_driver_api = {
 #define PADSTICK_INST(n)                                                                         \
 	static struct padstick_data padstick_data_##n;                                           \
 	static const struct padstick_config padstick_config_##n = {                              \
-		.x_deadzone = DT_INST_PROP_OR(n, x_deadzone, 20),                                \
-		.y_deadzone = DT_INST_PROP_OR(n, y_deadzone, 20),                                \
-		.x_scale = DT_INST_PROP_OR(n, x_scale, 256),                                     \
-		.y_scale = DT_INST_PROP_OR(n, y_scale, 256),                                     \
-		.x_accel_range = DT_INST_PROP_OR(n, x_accel_range, 96),                          \
-		.y_accel_range = DT_INST_PROP_OR(n, y_accel_range, 96),                          \
-		.x_accel_scale = DT_INST_PROP_OR(n, x_accel_scale, 512),                         \
-		.y_accel_scale = DT_INST_PROP_OR(n, y_accel_scale, 512),                         \
-		.max_x = DT_INST_PROP_OR(n, max_x, 127),                                         \
-		.max_y = DT_INST_PROP_OR(n, max_y, 127),                                         \
+		.x_deadzone = DT_INST_PROP_OR(n, x_deadzone, 48),                                \
+		.y_deadzone = DT_INST_PROP_OR(n, y_deadzone, 48),                                \
+		.x_scale = DT_INST_PROP_OR(n, x_scale, 8),                                       \
+		.y_scale = DT_INST_PROP_OR(n, y_scale, 8),                                       \
+		.x_accel_range = DT_INST_PROP_OR(n, x_accel_range, 464),                         \
+		.y_accel_range = DT_INST_PROP_OR(n, y_accel_range, 464),                         \
+		.x_accel_scale = DT_INST_PROP_OR(n, x_accel_scale, 12),                          \
+		.y_accel_scale = DT_INST_PROP_OR(n, y_accel_scale, 12),                          \
+		.max_x = DT_INST_PROP_OR(n, max_x, 16),                                          \
+		.max_y = DT_INST_PROP_OR(n, max_y, 16),                                          \
 		.invert_x = DT_INST_PROP_OR(n, invert_x, false),                                 \
 		.invert_y = DT_INST_PROP_OR(n, invert_y, false),                                 \
 		.suppress_abs = DT_INST_PROP_OR(n, suppress_abs, false),                         \

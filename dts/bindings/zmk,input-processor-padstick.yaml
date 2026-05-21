@@ -10,52 +10,52 @@ include: ip_zero_param.yaml
 properties:
   x-deadzone:
     type: int
-    default: 20
+    default: 48
     description: Absolute X counts around the touch origin that report zero motion.
 
   y-deadzone:
     type: int
-    default: 20
+    default: 48
     description: Absolute Y counts around the touch origin that report zero motion.
 
   x-scale:
     type: int
-    default: 256
+    default: 8
     description: X fine movement scale after the deadzone. 256 is 1.0x.
 
   y-scale:
     type: int
-    default: 256
+    default: 8
     description: Y fine movement scale after the deadzone. 256 is 1.0x.
 
   x-accel-range:
     type: int
-    default: 96
+    default: 464
     description: X counts after the deadzone used to ramp smoothly from x-scale to x-accel-scale.
 
   y-accel-range:
     type: int
-    default: 96
+    default: 464
     description: Y counts after the deadzone used to ramp smoothly from y-scale to y-accel-scale.
 
   x-accel-scale:
     type: int
-    default: 512
-    description: X scale reached at the end of x-accel-range. 512 is 2.0x.
+    default: 12
+    description: X scale reached at the end of x-accel-range. 256 is 1.0x.
 
   y-accel-scale:
     type: int
-    default: 512
-    description: Y scale reached at the end of y-accel-range. 512 is 2.0x.
+    default: 12
+    description: Y scale reached at the end of y-accel-range. 256 is 1.0x.
 
   max-x:
     type: int
-    default: 127
+    default: 16
     description: Maximum absolute REL_X value emitted by this processor.
 
   max-y:
     type: int
-    default: 127
+    default: 16
     description: Maximum absolute REL_Y value emitted by this processor.
 
   invert-x:

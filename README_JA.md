@@ -4,7 +4,7 @@
 
 絶対座標を報告するトラックパッドを、小さなジョイスティックのようなポインティング面として使うための ZMK input processor です。
 
-`zmk,input-processor-padstick` は、`INPUT_BTN_TOUCH` 後に最初に届いた `INPUT_ABS_X` と `INPUT_ABS_Y` をタッチ原点として保存します。その後の絶対座標レポートは、その原点からの距離に基づいて `INPUT_REL_X` / `INPUT_REL_Y` に変換されます。
+`zmk,input-processor-padstick` は、`INPUT_BTN_TOUCH` 後に最初に届いた完全な絶対座標レポートフレームを捨て、その次に届いた `INPUT_ABS_X` と `INPUT_ABS_Y` をタッチ原点として保存します。その後の絶対座標レポートは、その原点からの距離に基づいて `INPUT_REL_X` / `INPUT_REL_Y` に変換されます。
 
 ## Features
 
@@ -47,16 +47,16 @@ manifest:
 ```dts
 /* padstick processor の設定 */
 &padstick {
-    x-deadzone = <24>;
-    y-deadzone = <24>;
-    x-scale = <256>;
-    y-scale = <256>;
-    x-accel-range = <96>;
-    y-accel-range = <96>;
-    x-accel-scale = <512>;
-    y-accel-scale = <512>;
-    max-x = <80>;
-    max-y = <80>;
+    x-deadzone = <48>;
+    y-deadzone = <48>;
+    x-scale = <8>;
+    y-scale = <8>;
+    x-accel-range = <464>;
+    y-accel-range = <464>;
+    x-accel-scale = <12>;
+    y-accel-scale = <12>;
+    max-x = <16>;
+    max-y = <16>;
     suppress-abs;
     suppress-btn-touch;
 };
@@ -67,14 +67,17 @@ manifest:
 };
 ```
 
+デフォルト値は 1024 x 1024 の絶対座標トラックパッドを基準にしています。48 count の deadzone でタッチ原点周辺に小さな遊びを作り、中心から端までの残り約 464 count を滑らかな加速範囲として使います。
+
 ### 3. Motion Semantics
 
 - `BTN_TOUCH` press でタッチ原点とサブピクセル remainder をリセットします。
-- touch 後の最初の `ABS_X` と `ABS_Y` が原点座標になります。
+- touch 後の最初の完全な `ABS_X` / `ABS_Y` フレームは原点安定用として抑制します。
+- その次の `ABS_X` と `ABS_Y` が原点座標になります。
 - `x-deadzone` / `y-deadzone` 内の動きは 0 を出力し、その軸の remainder をクリアします。
 - deadzone 外の動きは fixed point scale で変換します。`256` が `1.0x` です。
 - 加速は `x-scale` / `y-scale` から `x-accel-scale` / `y-accel-scale` へ、`x-accel-range` / `y-accel-range` の距離内で滑らかに増えます。
-- 小数相当の出力は軸ごとに蓄積されます。たとえば `x-scale = <128>` の場合、deadzone 外の 1 count 入力が繰り返されると、2 回に 1 回 `REL_X = 1` が出ます。
+- 小数相当の出力は軸ごとに蓄積されます。たとえば `x-scale = <8>` の場合、deadzone 外の 1 count 入力が繰り返されると、32 回に 1 回 `REL_X = 1` が出ます。
 - 出力は `max-x` / `max-y` で clamp されます。飽和した場合、その軸の remainder はクリアされます。
 
 ## Debug Logging
@@ -87,16 +90,16 @@ debug log には、touch reset、保存された原点座標、raw ABS 座標、
 
 | Property | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `x-deadzone` | int | 20 | タッチ原点周辺で `REL_X = 0` とする X 絶対座標 count。 |
-| `y-deadzone` | int | 20 | タッチ原点周辺で `REL_Y = 0` とする Y 絶対座標 count。 |
-| `x-scale` | int | 256 | deadzone 外の X 低速移動 scale。`256` が `1.0x`。 |
-| `y-scale` | int | 256 | deadzone 外の Y 低速移動 scale。`256` が `1.0x`。 |
-| `x-accel-range` | int | 96 | `x-scale` から `x-accel-scale` へ滑らかに加速する X 距離 count。 |
-| `y-accel-range` | int | 96 | `y-scale` から `y-accel-scale` へ滑らかに加速する Y 距離 count。 |
-| `x-accel-scale` | int | 512 | `x-accel-range` 末端で到達する X scale。`512` が `2.0x`。 |
-| `y-accel-scale` | int | 512 | `y-accel-range` 末端で到達する Y scale。`512` が `2.0x`。 |
-| `max-x` | int | 127 | この processor が出力する `REL_X` の絶対値上限。 |
-| `max-y` | int | 127 | この processor が出力する `REL_Y` の絶対値上限。 |
+| `x-deadzone` | int | 48 | タッチ原点周辺で `REL_X = 0` とする X 絶対座標 count。 |
+| `y-deadzone` | int | 48 | タッチ原点周辺で `REL_Y = 0` とする Y 絶対座標 count。 |
+| `x-scale` | int | 8 | deadzone 外の X 低速移動 scale。`256` が `1.0x`。 |
+| `y-scale` | int | 8 | deadzone 外の Y 低速移動 scale。`256` が `1.0x`。 |
+| `x-accel-range` | int | 464 | `x-scale` から `x-accel-scale` へ滑らかに加速する X 距離 count。 |
+| `y-accel-range` | int | 464 | `y-scale` から `y-accel-scale` へ滑らかに加速する Y 距離 count。 |
+| `x-accel-scale` | int | 12 | `x-accel-range` 末端で到達する X scale。`256` が `1.0x`。 |
+| `y-accel-scale` | int | 12 | `y-accel-range` 末端で到達する Y scale。`256` が `1.0x`。 |
+| `max-x` | int | 16 | この processor が出力する `REL_X` の絶対値上限。 |
+| `max-y` | int | 16 | この processor が出力する `REL_Y` の絶対値上限。 |
 | `invert-x` | bool | false | 生成する `REL_X` の方向を反転します。 |
 | `invert-y` | bool | false | 生成する `REL_Y` の方向を反転します。 |
 | `suppress-abs` | bool | false | 変換されなかった ABS event を消費し、後段へ流さないようにします。 |
