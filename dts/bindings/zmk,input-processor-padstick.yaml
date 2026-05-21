@@ -1,0 +1,79 @@
+# Copyright (c) 2026 The ZMK Contributors
+# SPDX-License-Identifier: MIT
+
+description: Convert absolute trackpad reports into joystick-like relative pointer motion
+
+compatible: "zmk,input-processor-padstick"
+
+include: ip_zero_param.yaml
+
+properties:
+  x-deadzone:
+    type: int
+    default: 20
+    description: Absolute X counts around the touch origin that report zero motion.
+
+  y-deadzone:
+    type: int
+    default: 20
+    description: Absolute Y counts around the touch origin that report zero motion.
+
+  x-scale:
+    type: int
+    default: 256
+    description: X fine movement scale after the deadzone. 256 is 1.0x.
+
+  y-scale:
+    type: int
+    default: 256
+    description: Y fine movement scale after the deadzone. 256 is 1.0x.
+
+  x-accel-range:
+    type: int
+    default: 96
+    description: X counts after the deadzone used to ramp smoothly from x-scale to x-accel-scale.
+
+  y-accel-range:
+    type: int
+    default: 96
+    description: Y counts after the deadzone used to ramp smoothly from y-scale to y-accel-scale.
+
+  x-accel-scale:
+    type: int
+    default: 512
+    description: X scale reached at the end of x-accel-range. 512 is 2.0x.
+
+  y-accel-scale:
+    type: int
+    default: 512
+    description: Y scale reached at the end of y-accel-range. 512 is 2.0x.
+
+  max-x:
+    type: int
+    default: 127
+    description: Maximum absolute REL_X value emitted by this processor.
+
+  max-y:
+    type: int
+    default: 127
+    description: Maximum absolute REL_Y value emitted by this processor.
+
+  invert-x:
+    type: boolean
+    description: Invert generated REL_X direction.
+
+  invert-y:
+    type: boolean
+    description: Invert generated REL_Y direction.
+
+  suppress-abs:
+    type: boolean
+    description: Suppress unconverted absolute events so ABS reports do not leak downstream.
+
+  suppress-btn-touch:
+    type: boolean
+    description: Suppress BTN_TOUCH events after using them to track contact state.
+
+  suppress-btn0:
+    type: boolean
+    description: Suppress BTN_0 events when the trackpad reports a physical click.

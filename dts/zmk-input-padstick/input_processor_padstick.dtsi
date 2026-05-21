@@ -1,0 +1,14 @@
+/*
+ * Copyright (c) 2026 The ZMK Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+/ {
+	padstick: padstick {
+		compatible = "zmk,input-processor-padstick";
+		status = "okay";
+		#input-processor-cells = <0>;
+		suppress-abs;
+	};
+};
