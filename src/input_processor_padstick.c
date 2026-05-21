@@ -167,9 +167,15 @@ static int padstick_suppress_event(struct input_event *event) {
 
 static int padstick_handle_touch(struct input_event *event, struct padstick_data *data,
 				 const struct padstick_config *config) {
-	data->touching = event->value != 0;
-	padstick_reset_contact(data);
-	LOG_DBG("touch=%d reset origin/rem", data->touching);
+	bool touching = event->value != 0;
+
+	if (touching != data->touching) {
+		data->touching = touching;
+		padstick_reset_contact(data);
+		LOG_DBG("touch=%d reset origin/rem", data->touching);
+	} else {
+		LOG_DBG("touch=%d unchanged", data->touching);
+	}
 
 	if (config->suppress_btn_touch) {
 		return padstick_suppress_event(event);
