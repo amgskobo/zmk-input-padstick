@@ -4,11 +4,12 @@
 
 絶対座標を報告するトラックパッドを、小さなジョイスティックのようなポインティング面として使うための ZMK input processor です。
 
-`zmk,input-processor-padstick` は、`INPUT_BTN_TOUCH` 後に最初に届いた完全な絶対座標レポートフレームを捨て、その次に届いた `INPUT_ABS_X` と `INPUT_ABS_Y` をタッチ原点として保存します。その後の絶対座標レポートは、その原点からの距離に基づいて `INPUT_REL_X` / `INPUT_REL_Y` に変換されます。
+`zmk,input-processor-padstick` は、`INPUT_BTN_TOUCH` 後に最初に届いた完全な絶対座標レポートフレームを捨て、その後の絶対座標レポートを `INPUT_REL_X` / `INPUT_REL_Y` に変換します。デフォルトでは、その次に届いた `INPUT_ABS_X` と `INPUT_ABS_Y` を一時的なタッチ原点として保存します。`fixed-center` を有効にした場合は、設定した `x-center` / `y-center` 座標を原点として使います。
 
 ## Features
 
 - **原点ベースの移動**: タッチした位置を一時的なジョイスティック中心として扱います。
+- **固定中心モード**: タッチ位置ではなく、設定したトラックパッド中心座標を使えます。
 - **デッドゾーン**: タッチ直後の座標ぶれをポインタ移動にしません。
 - **滑らかな加速**: 時間ではなく距離に応じて、低速用 scale から加速後 scale へ整数演算だけで滑らかに遷移します。
 - **サブピクセル蓄積**: 軸ごとに小数相当の REL count を保持し、低感度でも小さな動きを捨てません。
@@ -57,6 +58,9 @@ manifest:
     y-accel-scale = <12>;
     max-x = <16>;
     max-y = <16>;
+    fixed-center;
+    x-center = <512>;
+    y-center = <512>;
     suppress-abs;
     suppress-btn-touch;
 };
@@ -73,7 +77,8 @@ manifest:
 
 - `BTN_TOUCH` press でタッチ原点とサブピクセル remainder をリセットします。
 - touch 後の最初の完全な `ABS_X` / `ABS_Y` フレームは原点安定用として抑制します。
-- その次の `ABS_X` と `ABS_Y` が原点座標になります。
+- デフォルトのタッチ原点モードでは、その次の `ABS_X` と `ABS_Y` が原点座標になります。
+- `fixed-center` では、毎回 `x-center` と `y-center` が原点座標になります。
 - `x-deadzone` / `y-deadzone` 内の動きは 0 を出力し、その軸の remainder をクリアします。
 - deadzone 外の動きは fixed point scale で変換します。`256` が `1.0x` です。
 - 加速は `x-scale` / `y-scale` から `x-accel-scale` / `y-accel-scale` へ、`x-accel-range` / `y-accel-range` の距離内で滑らかに増えます。
@@ -100,8 +105,11 @@ debug log には、touch reset、保存された原点座標、raw ABS 座標、
 | `y-accel-scale` | int | 12 | `y-accel-range` 末端で到達する Y scale。`256` が `1.0x`。 |
 | `max-x` | int | 16 | この processor が出力する `REL_X` の絶対値上限。 |
 | `max-y` | int | 16 | この processor が出力する `REL_Y` の絶対値上限。 |
+| `x-center` | int | 512 | `fixed-center` が有効なときに使う X 固定中心座標。 |
+| `y-center` | int | 512 | `fixed-center` が有効なときに使う Y 固定中心座標。 |
 | `invert-x` | bool | false | 生成する `REL_X` の方向を反転します。 |
 | `invert-y` | bool | false | 生成する `REL_Y` の方向を反転します。 |
+| `fixed-center` | bool | false | タッチ位置ではなく `x-center` と `y-center` をジョイスティック原点として使います。 |
 | `suppress-abs` | bool | false | 変換されなかった ABS event を消費し、後段へ流さないようにします。 |
 | `suppress-btn-touch` | bool | false | contact state として使った後の `BTN_TOUCH` event を消費します。 |
 | `suppress-btn0` | bool | false | トラックパッドが物理クリックとして報告する `BTN_0` event を消費します。 |

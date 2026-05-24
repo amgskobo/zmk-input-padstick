@@ -4,11 +4,12 @@
 
 A ZMK input processor for using an absolute-reporting trackpad as a small joystick-style pointing surface.
 
-`zmk,input-processor-padstick` ignores the first complete absolute report frame after `INPUT_BTN_TOUCH`, then stores the next `INPUT_ABS_X` and `INPUT_ABS_Y` values as the touch origin. Later absolute reports are converted to `INPUT_REL_X` and `INPUT_REL_Y` based on distance from that origin.
+`zmk,input-processor-padstick` ignores the first complete absolute report frame after `INPUT_BTN_TOUCH`, then converts later absolute reports to `INPUT_REL_X` and `INPUT_REL_Y`. By default the next `INPUT_ABS_X` and `INPUT_ABS_Y` values become the temporary touch origin. When `fixed-center` is enabled, the configured `x-center` / `y-center` coordinates are used instead.
 
 ## Features
 
 - **Origin-based motion**: Uses the touched position as a temporary joystick center.
+- **Fixed-center mode**: Can use a configured trackpad center instead of the touched position.
 - **Deadzone**: Ignores contact jitter around the touch origin.
 - **Smooth acceleration**: Ramps from fine movement scale to accelerated scale by distance, using integer math only.
 - **Sub-pixel accumulation**: Keeps fractional REL counts per axis so low scale values do not drop small movement.
@@ -57,6 +58,9 @@ Include the standard helper in your shield's `.overlay` or `.zmk.dts`:
     y-accel-scale = <12>;
     max-x = <16>;
     max-y = <16>;
+    fixed-center;
+    x-center = <512>;
+    y-center = <512>;
     suppress-abs;
     suppress-btn-touch;
 };
@@ -73,7 +77,8 @@ The defaults are tuned for a 1024 x 1024 absolute trackpad. A 48-count deadzone 
 
 - `BTN_TOUCH` press resets the touch origin and sub-pixel remainders.
 - The first complete `ABS_X` / `ABS_Y` frame after touch is suppressed as an origin-settle frame.
-- The next `ABS_X` and `ABS_Y` values become the origin coordinates.
+- With the default touch-origin mode, the next `ABS_X` and `ABS_Y` values become the origin coordinates.
+- With `fixed-center`, `x-center` and `y-center` become the origin coordinates for every touch.
 - Movement inside `x-deadzone` / `y-deadzone` emits zero and clears the axis remainder.
 - Movement outside the deadzone is scaled as fixed point where `256` is `1.0x`.
 - Acceleration ramps smoothly from `x-scale` / `y-scale` to `x-accel-scale` / `y-accel-scale` across `x-accel-range` / `y-accel-range`.
@@ -100,8 +105,11 @@ Debug logs include touch resets, stored origin coordinates, raw ABS coordinates,
 | `y-accel-scale` | int | 12 | Y scale reached at the end of `y-accel-range`. `256` is `1.0x`. |
 | `max-x` | int | 16 | Maximum absolute `REL_X` value emitted by this processor. |
 | `max-y` | int | 16 | Maximum absolute `REL_Y` value emitted by this processor. |
+| `x-center` | int | 512 | Fixed X center coordinate used when `fixed-center` is enabled. |
+| `y-center` | int | 512 | Fixed Y center coordinate used when `fixed-center` is enabled. |
 | `invert-x` | bool | false | Invert generated `REL_X` direction. |
 | `invert-y` | bool | false | Invert generated `REL_Y` direction. |
+| `fixed-center` | bool | false | Use `x-center` and `y-center` as the joystick origin instead of the touched position. |
 | `suppress-abs` | bool | false | Suppress unconverted absolute events so ABS reports do not leak downstream. |
 | `suppress-btn-touch` | bool | false | Suppress `BTN_TOUCH` events after using them to track contact state. |
 | `suppress-btn0` | bool | false | Suppress `BTN_0` events when the trackpad reports a physical click. |

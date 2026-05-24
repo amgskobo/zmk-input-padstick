@@ -34,8 +34,11 @@ struct padstick_config {
 	int32_t y_accel_scale;
 	int32_t max_x;
 	int32_t max_y;
+	int32_t x_center;
+	int32_t y_center;
 	bool invert_x;
 	bool invert_y;
+	bool fixed_center;
 	bool suppress_abs;
 	bool suppress_btn_touch;
 	bool suppress_btn0;
@@ -203,9 +206,14 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 		}
 
 		if (data->origin_x == PADSTICK_COORD_UNSET) {
-			data->origin_x = event->value;
-			LOG_DBG("x origin=%d", data->origin_x);
-			return padstick_suppress_event(event);
+			if (config->fixed_center) {
+				data->origin_x = config->x_center;
+				LOG_DBG("x fixed origin=%d", data->origin_x);
+			} else {
+				data->origin_x = event->value;
+				LOG_DBG("x origin=%d", data->origin_x);
+				return padstick_suppress_event(event);
+			}
 		}
 
 		event->type = INPUT_EV_REL;
@@ -228,9 +236,14 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 		}
 
 		if (data->origin_y == PADSTICK_COORD_UNSET) {
-			data->origin_y = event->value;
-			LOG_DBG("y origin=%d", data->origin_y);
-			return padstick_suppress_event(event);
+			if (config->fixed_center) {
+				data->origin_y = config->y_center;
+				LOG_DBG("y fixed origin=%d", data->origin_y);
+			} else {
+				data->origin_y = event->value;
+				LOG_DBG("y origin=%d", data->origin_y);
+				return padstick_suppress_event(event);
+			}
 		}
 
 		event->type = INPUT_EV_REL;
@@ -286,6 +299,8 @@ static int padstick_init(const struct device *dev) {
 	LOG_DBG("init y: dz=%d scale=%d accel_range=%d accel_scale=%d max=%d invert=%d",
 		config->y_deadzone, config->y_scale, config->y_accel_range,
 		config->y_accel_scale, config->max_y, config->invert_y);
+	LOG_DBG("init center: fixed=%d x=%d y=%d", config->fixed_center, config->x_center,
+		config->y_center);
 	LOG_DBG("init suppress: abs=%d btn_touch=%d btn0=%d", config->suppress_abs,
 		config->suppress_btn_touch, config->suppress_btn0);
 
@@ -309,8 +324,11 @@ static const struct zmk_input_processor_driver_api padstick_driver_api = {
 		.y_accel_scale = DT_INST_PROP_OR(n, y_accel_scale, 12),                          \
 		.max_x = DT_INST_PROP_OR(n, max_x, 16),                                          \
 		.max_y = DT_INST_PROP_OR(n, max_y, 16),                                          \
+		.x_center = DT_INST_PROP_OR(n, x_center, 512),                                   \
+		.y_center = DT_INST_PROP_OR(n, y_center, 512),                                   \
 		.invert_x = DT_INST_PROP_OR(n, invert_x, false),                                 \
 		.invert_y = DT_INST_PROP_OR(n, invert_y, false),                                 \
+		.fixed_center = DT_INST_PROP_OR(n, fixed_center, false),                         \
 		.suppress_abs = DT_INST_PROP_OR(n, suppress_abs, false),                         \
 		.suppress_btn_touch = DT_INST_PROP_OR(n, suppress_btn_touch, false),             \
 		.suppress_btn0 = DT_INST_PROP_OR(n, suppress_btn0, false),                       \

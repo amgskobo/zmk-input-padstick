@@ -58,6 +58,16 @@ properties:
     default: 16
     description: Maximum absolute REL_Y value emitted by this processor.
 
+  x-center:
+    type: int
+    default: 512
+    description: Fixed X center coordinate used when fixed-center is enabled.
+
+  y-center:
+    type: int
+    default: 512
+    description: Fixed Y center coordinate used when fixed-center is enabled.
+
   invert-x:
     type: boolean
     description: Invert generated REL_X direction.
@@ -65,6 +75,10 @@ properties:
   invert-y:
     type: boolean
     description: Invert generated REL_Y direction.
+
+  fixed-center:
+    type: boolean
+    description: Use x-center and y-center as the joystick origin instead of the touched position.
 
   suppress-abs:
     type: boolean
