@@ -51,6 +51,15 @@ struct padstick_data {
 	int32_t y_remainder;
 	bool touching;
 	bool skip_origin_frame;
+	/*
+	 * Set while a BTN_0 press has been suppressed here and its release has not
+	 * been seen yet. Suppression has to stay paired: which processors run is
+	 * decided per event from the layer active at that moment, so a press and
+	 * its release can be routed differently when the layer changes in between.
+	 * Dropping a release whose press was never suppressed here leaves the
+	 * button held down on the host with nothing left to release it.
+	 */
+	bool btn0_press_suppressed;
 };
 
 static void padstick_reset_contact(struct padstick_data *data) {
@@ -190,6 +199,31 @@ static int padstick_handle_touch(struct input_event *event, struct padstick_data
 	return ZMK_INPUT_PROC_CONTINUE;
 }
 
+/*
+ * Suppression has to stay paired. A release is only dropped when the matching
+ * press was dropped here; a press that reached the host on another layer keeps
+ * its release, so the button can never be left stuck down. Passing a release
+ * through is always safe - the press it belongs to was already delivered.
+ */
+static int padstick_handle_btn0(struct input_event *event, struct padstick_data *data,
+				const struct padstick_config *config) {
+	if (!config->suppress_btn0) {
+		data->btn0_press_suppressed = false;
+		return ZMK_INPUT_PROC_CONTINUE;
+	}
+
+	if (event->value) {
+		data->btn0_press_suppressed = true;
+	} else if (!data->btn0_press_suppressed) {
+		LOG_WRN("Passing BTN_0 release: its press was not suppressed here");
+		return ZMK_INPUT_PROC_CONTINUE;
+	} else {
+		data->btn0_press_suppressed = false;
+	}
+
+	return padstick_suppress_event(event);
+}
+
 static int padstick_handle_abs_axis(struct input_event *event, struct padstick_data *data,
 				    const struct padstick_config *config) {
 	if (!data->touching) {
@@ -273,8 +307,8 @@ static int padstick_handle_event(const struct device *dev, struct input_event *e
 			return padstick_handle_touch(event, data, config);
 		}
 
-		if (event->code == INPUT_BTN_0 && config->suppress_btn0) {
-			return padstick_suppress_event(event);
+		if (event->code == INPUT_BTN_0) {
+			return padstick_handle_btn0(event, data, config);
 		}
 
 		return ZMK_INPUT_PROC_CONTINUE;
@@ -292,6 +326,7 @@ static int padstick_init(const struct device *dev) {
 	const struct padstick_config *config = dev->config;
 
 	data->touching = false;
+	data->btn0_press_suppressed = false;
 	padstick_reset_contact(data);
 	LOG_DBG("init x: dz=%d scale=%d accel_range=%d accel_scale=%d max=%d invert=%d",
 		config->x_deadzone, config->x_scale, config->x_accel_range,
