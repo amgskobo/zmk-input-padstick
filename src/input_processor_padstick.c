@@ -92,6 +92,27 @@ static void padstick_reset_contact(struct padstick_data *data) {
 	data->last_y = PADSTICK_COORD_UNSET;
 }
 
+/*
+ * Seed both origins at once.
+ *
+ * With a fixed center neither origin depends on the contact, so both are known
+ * before any sample arrives. Seeding only the axis whose event is in hand would
+ * leave the other unset for the rest of that frame, and a radial reading needs
+ * both to measure the distance from the center: the axis that arrives first
+ * would fall back to its own displacement alone and come out short on anything
+ * but a straight push.
+ */
+static void padstick_seed_fixed_origin(struct padstick_data *data,
+				       const struct padstick_config *config) {
+	if (data->origin_x == PADSTICK_COORD_UNSET) {
+		data->origin_x = config->x_center;
+	}
+
+	if (data->origin_y == PADSTICK_COORD_UNSET) {
+		data->origin_y = config->y_center;
+	}
+}
+
 static int32_t padstick_abs_i32(int32_t value) {
 	if (value == INT32_MIN) {
 		return INT32_MAX;
@@ -322,7 +343,7 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 
 		if (data->origin_x == PADSTICK_COORD_UNSET) {
 			if (config->fixed_center) {
-				data->origin_x = config->x_center;
+				padstick_seed_fixed_origin(data, config);
 				LOG_DBG("x fixed origin=%d", data->origin_x);
 			} else {
 				data->origin_x = event->value;
@@ -358,7 +379,7 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 
 		if (data->origin_y == PADSTICK_COORD_UNSET) {
 			if (config->fixed_center) {
-				data->origin_y = config->y_center;
+				padstick_seed_fixed_origin(data, config);
 				LOG_DBG("y fixed origin=%d", data->origin_y);
 			} else {
 				data->origin_y = event->value;
