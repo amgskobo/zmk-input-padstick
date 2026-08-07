@@ -12,7 +12,7 @@ A ZMK input processor for using an absolute-reporting trackpad as a small joysti
 - **Fixed-center mode**: Can use a configured trackpad center instead of the touched position.
 - **Deadzone**: Ignores contact jitter around the touch origin.
 - **Smooth acceleration**: Ramps from fine movement scale to accelerated scale by distance, using integer math only.
-- **Radial response**: Optional. Makes speed depend only on how far the finger is, not on which way it is pushed, and turns the deadzone into a circle.
+- **Radial response**: Speed depends only on how far the finger is, not on which way it is pushed, and the deadzone is a circle.
 - **Sub-pixel accumulation**: Keeps fractional REL counts per axis so low scale values do not drop small movement.
 - **Optional suppression**: Can consume original ABS, `BTN_TOUCH`, and `BTN_0` events after processing.
 - **Layer-change safe**: Drops the origin when the layer changes, so a contact split across two chains is not measured against an unrelated one.
@@ -89,19 +89,15 @@ The defaults are tuned for a 1024 x 1024 absolute trackpad. A 48-count deadzone 
 
 ### 4. Radial Response
 
-Without `radial` the axes are independent, and how fast the stick runs depends on which way it is pushed. The deadzone is a square, and a ramp that rises with distance yields less when that distance is split between two axes than when it all lands on one, so a diagonal push comes out slower than a straight one.
+The distance from the origin is taken first, the ramp applied to that, and the resulting step shared out along the two axes in proportion to their displacement. Speed therefore depends only on how far the finger has moved, and the deadzone is a circle.
 
-`radial` takes the distance from the origin first, applies the ramp to that, then shares the resulting step out along the two axes in proportion to their displacement. Speed then depends only on how far the finger is, and the deadzone becomes a circle.
+Reading each axis on its own would make the deadzone a square, and a ramp that rises with distance yields less when that distance is split between two axes than when it all lands on one - so a diagonal push would come out slower than a straight one, by a margin that grows with deflection.
 
-```dts
-&padstick {
-    radial;
-};
-```
-
-It costs one integer square root and one divide per axis event. The square root is bit-by-bit, sixteen rounds of shifts and compares with no divide or multiply.
+This is not configurable. The distance costs one integer square root and the share one divide, per axis event; measured against the interval between reports that is not a meaningful fraction, so there is nothing to trade away by making it optional. The square root is bit-by-bit, sixteen rounds of shifts and compares with no divide or multiply.
 
 Because the axes arrive as separate events, the one that comes first reads its partner one sample behind - far below what a finger covers between reports.
+
+Both deadzones bound the same circular distance, so set `x-deadzone` and `y-deadzone` to the same value unless the pad's axes have different resolutions.
 
 ### 5. Sizing `max-x` / `max-y`
 
@@ -113,7 +109,7 @@ max = range * (scale + accel-scale) / 2 / 256
 
 Set `max-x` / `max-y` to that value and the response saturates exactly at the rim of the usable area. Set it lower and the outer part of the pad is flat; set it higher and the rim never reaches full speed.
 
-With `radial` the clamp still applies per axis, so it acts as a safety limit rather than the operating point - a diagonal push at full deflection puts about 0.71 of the step on each axis.
+The clamp applies per axis, so it acts as a safety limit rather than the operating point - a diagonal push at full deflection puts about 0.71 of the step on each axis.
 
 ### 6. Layer Changes
 
@@ -135,8 +131,8 @@ Debug logs include touch resets, stored origin coordinates, raw ABS coordinates,
 
 | Property | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `x-deadzone` | int | 48 | Absolute X counts around the touch origin that emit zero. |
-| `y-deadzone` | int | 48 | Absolute Y counts around the touch origin that emit zero. |
+| `x-deadzone` | int | 48 | Counts of travel from the origin that emit zero. The distance is radial, so both deadzones bound the same circle. |
+| `y-deadzone` | int | 48 | See `x-deadzone`. |
 | `x-scale` | int | 8 | X fine movement scale after the deadzone. `256` is `1.0x`. |
 | `y-scale` | int | 8 | Y fine movement scale after the deadzone. `256` is `1.0x`. |
 | `x-accel-range` | int | 464 | X counts after the deadzone used to ramp smoothly from `x-scale` to `x-accel-scale`. |
@@ -150,7 +146,6 @@ Debug logs include touch resets, stored origin coordinates, raw ABS coordinates,
 | `invert-x` | bool | false | Invert generated `REL_X` direction. |
 | `invert-y` | bool | false | Invert generated `REL_Y` direction. |
 | `fixed-center` | bool | false | Use `x-center` and `y-center` as the joystick origin instead of the touched position. |
-| `radial` | bool | false | Take the distance from the origin before applying the ramp, then share the step out along the two axes. Makes speed independent of direction and the deadzone circular. |
 | `suppress-abs` | bool | false | Suppress unconverted absolute events so ABS reports do not leak downstream. |
 | `suppress-btn-touch` | bool | false | Suppress `BTN_TOUCH` events after using them to track contact state. |
 | `suppress-btn0` | bool | false | Suppress `BTN_0` events when the trackpad reports a physical click. |

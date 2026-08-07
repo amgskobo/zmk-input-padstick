@@ -41,7 +41,6 @@ struct padstick_config {
 	bool invert_x;
 	bool invert_y;
 	bool fixed_center;
-	bool radial;
 	bool suppress_abs;
 	bool suppress_btn_touch;
 	bool suppress_btn0;
@@ -176,32 +175,29 @@ static int32_t padstick_scale_distance(int32_t distance, int32_t accel_range, in
 /*
  * Turn one axis of a contact into a step.
  *
- * Without radial the axes are independent, so how fast the stick runs depends
- * on which way it is pushed: the deadzone is square, and a ramp that rises with
- * distance gives less when that distance is split between two axes than when it
- * all lands on one. Diagonal ends up slower than straight.
+ * The distance from the origin is taken first and the ramp applied to that,
+ * then the step is shared out along the two axes. Speed therefore depends only
+ * on how far the finger has moved and not on which way it was pushed, and the
+ * deadzone is a circle.
  *
- * With radial the distance from the origin is taken first and the ramp applied
- * to that, then the step is shared out along the two axes. Speed then depends
- * only on how far the finger is, not on the direction, and the deadzone becomes
- * a circle. Costs one integer square root and one divide per axis.
+ * Reading each axis on its own would make the deadzone a square, and a ramp
+ * that rises with distance yields less when that distance is split between two
+ * axes than when it all lands on one - so a diagonal push would come out slower
+ * than a straight one, by a margin that grows with deflection.
+ *
+ * The distance costs one integer square root and the share one divide, per axis
+ * event. Against the interval between reports that is not a meaningful fraction.
  */
 static int32_t padstick_apply_axis(char axis, int32_t value, int32_t origin, int32_t deadzone,
 				   int32_t scale, int32_t accel_range,
 				   int32_t accel_scale, int32_t max_value, bool invert,
-				   int32_t *remainder, int32_t other_delta, bool radial) {
+				   int32_t *remainder, int32_t other_delta) {
 	int32_t delta = value - origin;
 	int32_t axis_distance = MIN(padstick_abs_i32(delta), PADSTICK_DISTANCE_MAX);
-	int32_t magnitude = axis_distance;
-
-	if (radial) {
-		uint32_t a = (uint32_t)axis_distance;
-		uint32_t b = (uint32_t)MIN(padstick_abs_i32(other_delta), PADSTICK_DISTANCE_MAX);
-
-		magnitude = (int32_t)MIN(padstick_isqrt(a * a + b * b),
+	uint32_t a = (uint32_t)axis_distance;
+	uint32_t b = (uint32_t)MIN(padstick_abs_i32(other_delta), PADSTICK_DISTANCE_MAX);
+	int32_t magnitude = (int32_t)MIN(padstick_isqrt(a * a + b * b),
 					 (uint32_t)PADSTICK_DISTANCE_MAX);
-	}
-
 	int32_t reach = magnitude;
 	int32_t remainder_in = *remainder;
 
@@ -221,7 +217,7 @@ static int32_t padstick_apply_axis(char axis, int32_t value, int32_t origin, int
 
 	int32_t scaled = padstick_scale_distance(magnitude, accel_range, scale, accel_scale);
 
-	if (radial && reach > 0) {
+	if (reach > 0) {
 		/* Share the step out along this axis: distance_on_axis / distance. */
 		scaled = (int32_t)(((int64_t)scaled * (int64_t)axis_distance) / (int64_t)reach);
 	}
@@ -354,7 +350,7 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 
 		event->type = INPUT_EV_REL;
 		event->code = INPUT_REL_X;
-		int32_t other = (config->radial && data->last_y != PADSTICK_COORD_UNSET &&
+		int32_t other = (data->last_y != PADSTICK_COORD_UNSET &&
 				 data->origin_y != PADSTICK_COORD_UNSET)
 					? data->last_y - data->origin_y
 					: 0;
@@ -363,8 +359,7 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 						   config->x_deadzone,
 						   config->x_scale, config->x_accel_range,
 						   config->x_accel_scale, config->max_x,
-						   config->invert_x, &data->x_remainder,
-						   other, config->radial);
+						   config->invert_x, &data->x_remainder, other);
 		return ZMK_INPUT_PROC_CONTINUE;
 	}
 
@@ -390,7 +385,7 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 
 		event->type = INPUT_EV_REL;
 		event->code = INPUT_REL_Y;
-		int32_t other = (config->radial && data->last_x != PADSTICK_COORD_UNSET &&
+		int32_t other = (data->last_x != PADSTICK_COORD_UNSET &&
 				 data->origin_x != PADSTICK_COORD_UNSET)
 					? data->last_x - data->origin_x
 					: 0;
@@ -399,8 +394,7 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 						   config->y_deadzone,
 						   config->y_scale, config->y_accel_range,
 						   config->y_accel_scale, config->max_y,
-						   config->invert_y, &data->y_remainder,
-						   other, config->radial);
+						   config->invert_y, &data->y_remainder, other);
 		return ZMK_INPUT_PROC_CONTINUE;
 	}
 
@@ -478,7 +472,6 @@ static const struct zmk_input_processor_driver_api padstick_driver_api = {
 		.invert_x = DT_INST_PROP_OR(n, invert_x, false),                                 \
 		.invert_y = DT_INST_PROP_OR(n, invert_y, false),                                 \
 		.fixed_center = DT_INST_PROP_OR(n, fixed_center, false),                         \
-		.radial = DT_INST_PROP_OR(n, radial, false),                                     \
 		.suppress_abs = DT_INST_PROP_OR(n, suppress_abs, false),                         \
 		.suppress_btn_touch = DT_INST_PROP_OR(n, suppress_btn_touch, false),             \
 		.suppress_btn0 = DT_INST_PROP_OR(n, suppress_btn0, false),                       \
