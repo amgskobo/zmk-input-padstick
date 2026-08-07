@@ -11,7 +11,6 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
-#include <zephyr/spinlock.h>
 #include <drivers/input_processor.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/layer_state_changed.h>
@@ -49,12 +48,14 @@ struct padstick_config {
 
 struct padstick_data {
 	/*
-	 * Guards the origin and the remainders below. They are read on the input
-	 * thread and dropped from whichever thread raises a layer change, and a
-	 * change landing between the two axes of one sample would convert one of
-	 * them against the old origin.
+	 * Written from the input thread and cleared from whichever thread raises a
+	 * layer change. No lock: each field is a single aligned store, the clearing
+	 * side only ever invalidates and the reading side only ever re-establishes,
+	 * so a half-seen clear costs at most one more sample against the old origin.
+	 * A lock would not buy the pair of axes either - they arrive as separate
+	 * events, so a change can always land between them - and this path logs on
+	 * every sample, which has no business running with interrupts masked.
 	 */
-	struct k_spinlock lock;
 	int32_t origin_x;
 	int32_t origin_y;
 	int32_t x_remainder;
@@ -222,11 +223,9 @@ static int padstick_handle_btn0(struct input_event *event, struct padstick_data 
 		return ZMK_INPUT_PROC_CONTINUE;
 	}
 
-	k_spinlock_key_t key = k_spin_lock(&data->lock);
 	bool was_suppressed = data->btn0_press_suppressed;
 
 	data->btn0_press_suppressed = event->value != 0;
-	k_spin_unlock(&data->lock, key);
 
 	if (!event->value && !was_suppressed) {
 		LOG_WRN("Passing BTN_0 release: its press was not suppressed here");
@@ -316,11 +315,7 @@ static int padstick_handle_event(const struct device *dev, struct input_event *e
 
 	if (event->type == INPUT_EV_KEY) {
 		if (event->code == INPUT_BTN_TOUCH) {
-			k_spinlock_key_t key = k_spin_lock(&data->lock);
-			int ret = padstick_handle_touch(event, data, config);
-
-			k_spin_unlock(&data->lock, key);
-			return ret;
+			return padstick_handle_touch(event, data, config);
 		}
 
 		if (event->code == INPUT_BTN_0) {
@@ -331,11 +326,7 @@ static int padstick_handle_event(const struct device *dev, struct input_event *e
 	}
 
 	if (event->type == INPUT_EV_ABS) {
-		k_spinlock_key_t key = k_spin_lock(&data->lock);
-		int ret = padstick_handle_abs_axis(event, data, config);
-
-		k_spin_unlock(&data->lock, key);
-		return ret;
+		return padstick_handle_abs_axis(event, data, config);
 	}
 
 	return ZMK_INPUT_PROC_CONTINUE;
@@ -410,7 +401,6 @@ DT_INST_FOREACH_STATUS_OKAY(PADSTICK_INST)
 #define PADSTICK_RESYNC(n)                                                           \
 	{                                                                            \
 		struct padstick_data *data = DEVICE_DT_INST_GET(n)->data;            \
-		k_spinlock_key_t key = k_spin_lock(&data->lock);                     \
 		padstick_reset_contact(data);                                        \
 		/*                                                                   \
 		 * A press suppressed here whose release is routed elsewhere would   \
@@ -419,7 +409,6 @@ DT_INST_FOREACH_STATUS_OKAY(PADSTICK_INST)
 		 * exists to prevent.                                                \
 		 */                                                                  \
 		data->btn0_press_suppressed = false;                                 \
-		k_spin_unlock(&data->lock, key);                                     \
 	}
 
 static int padstick_layer_listener(const zmk_event_t *eh) {
