@@ -222,13 +222,15 @@ static int padstick_handle_btn0(struct input_event *event, struct padstick_data 
 		return ZMK_INPUT_PROC_CONTINUE;
 	}
 
-	if (event->value) {
-		data->btn0_press_suppressed = true;
-	} else if (!data->btn0_press_suppressed) {
+	k_spinlock_key_t key = k_spin_lock(&data->lock);
+	bool was_suppressed = data->btn0_press_suppressed;
+
+	data->btn0_press_suppressed = event->value != 0;
+	k_spin_unlock(&data->lock, key);
+
+	if (!event->value && !was_suppressed) {
 		LOG_WRN("Passing BTN_0 release: its press was not suppressed here");
 		return ZMK_INPUT_PROC_CONTINUE;
-	} else {
-		data->btn0_press_suppressed = false;
 	}
 
 	return padstick_suppress_event(event);
@@ -405,7 +407,20 @@ DT_INST_FOREACH_STATUS_OKAY(PADSTICK_INST)
  * contact until the finger lifted, which on a board that keeps one instance
  * across every layer would stop the pointer the moment a layer key was pressed.
  */
-#define PADSTICK_RESYNC(n)                                                                        	{                                                                                          		struct padstick_data *data = DEVICE_DT_INST_GET(n)->data;                          		k_spinlock_key_t key = k_spin_lock(&data->lock);                                   		padstick_reset_contact(data);                                                      		k_spin_unlock(&data->lock, key);                                                   	}
+#define PADSTICK_RESYNC(n)                                                           \
+	{                                                                            \
+		struct padstick_data *data = DEVICE_DT_INST_GET(n)->data;            \
+		k_spinlock_key_t key = k_spin_lock(&data->lock);                     \
+		padstick_reset_contact(data);                                        \
+		/*                                                                   \
+		 * A press suppressed here whose release is routed elsewhere would   \
+		 * leave this set for good, and the next unrelated release to reach  \
+		 * this instance would be swallowed - the stuck button the record    \
+		 * exists to prevent.                                                \
+		 */                                                                  \
+		data->btn0_press_suppressed = false;                                 \
+		k_spin_unlock(&data->lock, key);                                     \
+	}
 
 static int padstick_layer_listener(const zmk_event_t *eh) {
 	ARG_UNUSED(eh);
