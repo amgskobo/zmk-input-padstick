@@ -60,7 +60,6 @@ struct padstick_data {
 	int32_t origin_y;
 	int32_t x_remainder;
 	int32_t y_remainder;
-	bool touching;
 	bool skip_origin_frame;
 	/*
 	 * Last raw value seen on each axis, so the other one is available when a
@@ -272,17 +271,23 @@ static int padstick_suppress_event(struct input_event *event) {
 	return ZMK_INPUT_PROC_STOP;
 }
 
+/*
+ * Both edges of BTN_TOUCH start the contact over.
+ *
+ * A press begins a contact that bears no relation to the last one, and a
+ * release ends one - and the trackpad emits a final absolute pair just after
+ * the release, which the settle frame then absorbs instead of turning it into a
+ * step from wherever the finger happened to leave the pad.
+ *
+ * Neither edge is treated as redundant. Which processors run is decided per
+ * event from the layer active at that moment, so this instance may simply have
+ * missed the release that ended the previous contact; skipping the reset then
+ * would carry that contact's origin and remainders into the new one.
+ */
 static int padstick_handle_touch(struct input_event *event, struct padstick_data *data,
 				 const struct padstick_config *config) {
-	bool touching = event->value != 0;
-
-	if (touching != data->touching) {
-		data->touching = touching;
-		padstick_reset_contact(data);
-		LOG_DBG("touch=%d reset origin/rem", data->touching);
-	} else {
-		LOG_DBG("touch=%d unchanged", data->touching);
-	}
+	padstick_reset_contact(data);
+	LOG_DBG("touch=%d reset origin/rem", event->value != 0);
 
 	if (config->suppress_btn_touch) {
 		return padstick_suppress_event(event);
@@ -324,10 +329,20 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 		data->last_y = event->value;
 	}
 
-	if (!data->touching) {
-		return config->suppress_abs ? padstick_suppress_event(event) : ZMK_INPUT_PROC_CONTINUE;
-	}
-
+	/*
+	 * There is deliberately no contact-state gate here. Such a flag would be
+	 * per instance, but an instance only sees the events that arrive while it
+	 * holds the chain, and the chain is chosen per event from the layer active
+	 * at that moment. An instance that missed the press of the contact now in
+	 * progress would gate itself off for the rest of it and swallow every
+	 * sample - which reads as the pointer dying mid-stroke until the finger is
+	 * lifted, and only intermittently, since an instance that once saw a press
+	 * without its release stays open by accident.
+	 *
+	 * The settle frame and the origin already cover not knowing where the
+	 * finger was: the first frame is skipped, the origin is taken, and the next
+	 * frame produces a step. That is what every contact does at its start.
+	 */
 	if (event->code == INPUT_ABS_X) {
 		if (data->skip_origin_frame) {
 			LOG_DBG("x skip origin-settle abs=%d sync=%d", event->value, event->sync);
@@ -433,7 +448,6 @@ static int padstick_init(const struct device *dev) {
 	struct padstick_data *data = dev->data;
 	const struct padstick_config *config = dev->config;
 
-	data->touching = false;
 	data->btn0_press_suppressed = false;
 	padstick_reset_contact(data);
 	LOG_DBG("init x: dz=%d scale=%d accel_range=%d accel_scale=%d max=%d invert=%d",
@@ -491,9 +505,11 @@ DT_INST_FOREACH_STATUS_OKAY(PADSTICK_INST)
  * taken from an earlier touch, and the first sample it sees is turned into the
  * distance between two unrelated contacts.
  *
- * The touch flag is deliberately left alone. Clearing it would silence a
- * contact until the finger lifted, which on a board that keeps one instance
- * across every layer would stop the pointer the moment a layer key was pressed.
+ * Dropping the origin costs the settle frame spent re-establishing it, the same
+ * frame every contact already spends when it starts. Nothing here records
+ * whether a contact is in progress, deliberately: an instance only sees the
+ * events that arrive while it holds the chain, so a flag taken from BTN_TOUCH
+ * would be wrong for exactly the contact this reset exists to rescue.
  */
 #define PADSTICK_RESYNC(n)                                                           \
 	{                                                                            \
