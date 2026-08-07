@@ -76,6 +76,20 @@ properties:
     type: boolean
     description: Invert generated REL_Y direction.
 
+  radial:
+    type: boolean
+    description: |
+      Take the distance from the origin before applying the ramp, then share the
+      resulting step out along the two axes.
+
+      Without this the axes are independent: the deadzone is square, and a ramp
+      that rises with distance yields less when that distance is split between
+      two axes than when it all lands on one, so a diagonal push runs slower
+      than a straight one. With it the speed depends only on how far the finger
+      has moved, and the deadzone becomes a circle.
+
+      Costs one integer square root and one divide per axis event.
+
   fixed-center:
     type: boolean
     description: Use x-center and y-center as the joystick origin instead of the touched position.
