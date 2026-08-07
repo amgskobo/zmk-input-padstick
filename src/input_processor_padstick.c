@@ -41,7 +41,6 @@ struct padstick_config {
 	bool invert_x;
 	bool invert_y;
 	bool fixed_center;
-	bool radial;
 	bool suppress_abs;
 	bool suppress_btn_touch;
 	bool suppress_btn0;
@@ -61,7 +60,6 @@ struct padstick_data {
 	int32_t origin_y;
 	int32_t x_remainder;
 	int32_t y_remainder;
-	bool touching;
 	bool skip_origin_frame;
 	/*
 	 * Last raw value seen on each axis, so the other one is available when a
@@ -90,6 +88,27 @@ static void padstick_reset_contact(struct padstick_data *data) {
 	data->skip_origin_frame = true;
 	data->last_x = PADSTICK_COORD_UNSET;
 	data->last_y = PADSTICK_COORD_UNSET;
+}
+
+/*
+ * Seed both origins at once.
+ *
+ * With a fixed center neither origin depends on the contact, so both are known
+ * before any sample arrives. Seeding only the axis whose event is in hand would
+ * leave the other unset for the rest of that frame, and a radial reading needs
+ * both to measure the distance from the center: the axis that arrives first
+ * would fall back to its own displacement alone and come out short on anything
+ * but a straight push.
+ */
+static void padstick_seed_fixed_origin(struct padstick_data *data,
+				       const struct padstick_config *config) {
+	if (data->origin_x == PADSTICK_COORD_UNSET) {
+		data->origin_x = config->x_center;
+	}
+
+	if (data->origin_y == PADSTICK_COORD_UNSET) {
+		data->origin_y = config->y_center;
+	}
 }
 
 static int32_t padstick_abs_i32(int32_t value) {
@@ -155,32 +174,29 @@ static int32_t padstick_scale_distance(int32_t distance, int32_t accel_range, in
 /*
  * Turn one axis of a contact into a step.
  *
- * Without radial the axes are independent, so how fast the stick runs depends
- * on which way it is pushed: the deadzone is square, and a ramp that rises with
- * distance gives less when that distance is split between two axes than when it
- * all lands on one. Diagonal ends up slower than straight.
+ * The distance from the origin is taken first and the ramp applied to that,
+ * then the step is shared out along the two axes. Speed therefore depends only
+ * on how far the finger has moved and not on which way it was pushed, and the
+ * deadzone is a circle.
  *
- * With radial the distance from the origin is taken first and the ramp applied
- * to that, then the step is shared out along the two axes. Speed then depends
- * only on how far the finger is, not on the direction, and the deadzone becomes
- * a circle. Costs one integer square root and one divide per axis.
+ * Reading each axis on its own would make the deadzone a square, and a ramp
+ * that rises with distance yields less when that distance is split between two
+ * axes than when it all lands on one - so a diagonal push would come out slower
+ * than a straight one, by a margin that grows with deflection.
+ *
+ * The distance costs one integer square root and the share one divide, per axis
+ * event. Against the interval between reports that is not a meaningful fraction.
  */
 static int32_t padstick_apply_axis(char axis, int32_t value, int32_t origin, int32_t deadzone,
 				   int32_t scale, int32_t accel_range,
 				   int32_t accel_scale, int32_t max_value, bool invert,
-				   int32_t *remainder, int32_t other_delta, bool radial) {
+				   int32_t *remainder, int32_t other_delta) {
 	int32_t delta = value - origin;
 	int32_t axis_distance = MIN(padstick_abs_i32(delta), PADSTICK_DISTANCE_MAX);
-	int32_t magnitude = axis_distance;
-
-	if (radial) {
-		uint32_t a = (uint32_t)axis_distance;
-		uint32_t b = (uint32_t)MIN(padstick_abs_i32(other_delta), PADSTICK_DISTANCE_MAX);
-
-		magnitude = (int32_t)MIN(padstick_isqrt(a * a + b * b),
+	uint32_t a = (uint32_t)axis_distance;
+	uint32_t b = (uint32_t)MIN(padstick_abs_i32(other_delta), PADSTICK_DISTANCE_MAX);
+	int32_t magnitude = (int32_t)MIN(padstick_isqrt(a * a + b * b),
 					 (uint32_t)PADSTICK_DISTANCE_MAX);
-	}
-
 	int32_t reach = magnitude;
 	int32_t remainder_in = *remainder;
 
@@ -200,7 +216,7 @@ static int32_t padstick_apply_axis(char axis, int32_t value, int32_t origin, int
 
 	int32_t scaled = padstick_scale_distance(magnitude, accel_range, scale, accel_scale);
 
-	if (radial && reach > 0) {
+	if (reach > 0) {
 		/* Share the step out along this axis: distance_on_axis / distance. */
 		scaled = (int32_t)(((int64_t)scaled * (int64_t)axis_distance) / (int64_t)reach);
 	}
@@ -255,17 +271,23 @@ static int padstick_suppress_event(struct input_event *event) {
 	return ZMK_INPUT_PROC_STOP;
 }
 
+/*
+ * Both edges of BTN_TOUCH start the contact over.
+ *
+ * A press begins a contact that bears no relation to the last one, and a
+ * release ends one - and the trackpad emits a final absolute pair just after
+ * the release, which the settle frame then absorbs instead of turning it into a
+ * step from wherever the finger happened to leave the pad.
+ *
+ * Neither edge is treated as redundant. Which processors run is decided per
+ * event from the layer active at that moment, so this instance may simply have
+ * missed the release that ended the previous contact; skipping the reset then
+ * would carry that contact's origin and remainders into the new one.
+ */
 static int padstick_handle_touch(struct input_event *event, struct padstick_data *data,
 				 const struct padstick_config *config) {
-	bool touching = event->value != 0;
-
-	if (touching != data->touching) {
-		data->touching = touching;
-		padstick_reset_contact(data);
-		LOG_DBG("touch=%d reset origin/rem", data->touching);
-	} else {
-		LOG_DBG("touch=%d unchanged", data->touching);
-	}
+	padstick_reset_contact(data);
+	LOG_DBG("touch=%d reset origin/rem", event->value != 0);
 
 	if (config->suppress_btn_touch) {
 		return padstick_suppress_event(event);
@@ -307,10 +329,20 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 		data->last_y = event->value;
 	}
 
-	if (!data->touching) {
-		return config->suppress_abs ? padstick_suppress_event(event) : ZMK_INPUT_PROC_CONTINUE;
-	}
-
+	/*
+	 * There is deliberately no contact-state gate here. Such a flag would be
+	 * per instance, but an instance only sees the events that arrive while it
+	 * holds the chain, and the chain is chosen per event from the layer active
+	 * at that moment. An instance that missed the press of the contact now in
+	 * progress would gate itself off for the rest of it and swallow every
+	 * sample - which reads as the pointer dying mid-stroke until the finger is
+	 * lifted, and only intermittently, since an instance that once saw a press
+	 * without its release stays open by accident.
+	 *
+	 * The settle frame and the origin already cover not knowing where the
+	 * finger was: the first frame is skipped, the origin is taken, and the next
+	 * frame produces a step. That is what every contact does at its start.
+	 */
 	if (event->code == INPUT_ABS_X) {
 		if (data->skip_origin_frame) {
 			LOG_DBG("x skip origin-settle abs=%d sync=%d", event->value, event->sync);
@@ -322,7 +354,7 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 
 		if (data->origin_x == PADSTICK_COORD_UNSET) {
 			if (config->fixed_center) {
-				data->origin_x = config->x_center;
+				padstick_seed_fixed_origin(data, config);
 				LOG_DBG("x fixed origin=%d", data->origin_x);
 			} else {
 				data->origin_x = event->value;
@@ -333,7 +365,7 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 
 		event->type = INPUT_EV_REL;
 		event->code = INPUT_REL_X;
-		int32_t other = (config->radial && data->last_y != PADSTICK_COORD_UNSET &&
+		int32_t other = (data->last_y != PADSTICK_COORD_UNSET &&
 				 data->origin_y != PADSTICK_COORD_UNSET)
 					? data->last_y - data->origin_y
 					: 0;
@@ -342,8 +374,7 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 						   config->x_deadzone,
 						   config->x_scale, config->x_accel_range,
 						   config->x_accel_scale, config->max_x,
-						   config->invert_x, &data->x_remainder,
-						   other, config->radial);
+						   config->invert_x, &data->x_remainder, other);
 		return ZMK_INPUT_PROC_CONTINUE;
 	}
 
@@ -358,7 +389,7 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 
 		if (data->origin_y == PADSTICK_COORD_UNSET) {
 			if (config->fixed_center) {
-				data->origin_y = config->y_center;
+				padstick_seed_fixed_origin(data, config);
 				LOG_DBG("y fixed origin=%d", data->origin_y);
 			} else {
 				data->origin_y = event->value;
@@ -369,7 +400,7 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 
 		event->type = INPUT_EV_REL;
 		event->code = INPUT_REL_Y;
-		int32_t other = (config->radial && data->last_x != PADSTICK_COORD_UNSET &&
+		int32_t other = (data->last_x != PADSTICK_COORD_UNSET &&
 				 data->origin_x != PADSTICK_COORD_UNSET)
 					? data->last_x - data->origin_x
 					: 0;
@@ -378,8 +409,7 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 						   config->y_deadzone,
 						   config->y_scale, config->y_accel_range,
 						   config->y_accel_scale, config->max_y,
-						   config->invert_y, &data->y_remainder,
-						   other, config->radial);
+						   config->invert_y, &data->y_remainder, other);
 		return ZMK_INPUT_PROC_CONTINUE;
 	}
 
@@ -418,7 +448,6 @@ static int padstick_init(const struct device *dev) {
 	struct padstick_data *data = dev->data;
 	const struct padstick_config *config = dev->config;
 
-	data->touching = false;
 	data->btn0_press_suppressed = false;
 	padstick_reset_contact(data);
 	LOG_DBG("init x: dz=%d scale=%d accel_range=%d accel_scale=%d max=%d invert=%d",
@@ -457,7 +486,6 @@ static const struct zmk_input_processor_driver_api padstick_driver_api = {
 		.invert_x = DT_INST_PROP_OR(n, invert_x, false),                                 \
 		.invert_y = DT_INST_PROP_OR(n, invert_y, false),                                 \
 		.fixed_center = DT_INST_PROP_OR(n, fixed_center, false),                         \
-		.radial = DT_INST_PROP_OR(n, radial, false),                                     \
 		.suppress_abs = DT_INST_PROP_OR(n, suppress_abs, false),                         \
 		.suppress_btn_touch = DT_INST_PROP_OR(n, suppress_btn_touch, false),             \
 		.suppress_btn0 = DT_INST_PROP_OR(n, suppress_btn0, false),                       \
@@ -477,9 +505,11 @@ DT_INST_FOREACH_STATUS_OKAY(PADSTICK_INST)
  * taken from an earlier touch, and the first sample it sees is turned into the
  * distance between two unrelated contacts.
  *
- * The touch flag is deliberately left alone. Clearing it would silence a
- * contact until the finger lifted, which on a board that keeps one instance
- * across every layer would stop the pointer the moment a layer key was pressed.
+ * Dropping the origin costs the settle frame spent re-establishing it, the same
+ * frame every contact already spends when it starts. Nothing here records
+ * whether a contact is in progress, deliberately: an instance only sees the
+ * events that arrive while it holds the chain, so a flag taken from BTN_TOUCH
+ * would be wrong for exactly the contact this reset exists to rescue.
  */
 #define PADSTICK_RESYNC(n)                                                           \
 	{                                                                            \

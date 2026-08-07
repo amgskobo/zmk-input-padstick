@@ -11,12 +11,16 @@ properties:
   x-deadzone:
     type: int
     default: 48
-    description: Absolute X counts around the touch origin that report zero motion.
+    description: |
+      Counts of travel from the origin that report zero motion. The distance is
+      measured from the origin rather than along each axis, so the deadzone is a
+      circle: set x-deadzone and y-deadzone to the same value unless the pad's
+      axes have different resolutions.
 
   y-deadzone:
     type: int
     default: 48
-    description: Absolute Y counts around the touch origin that report zero motion.
+    description: Counts of travel from the origin that report zero motion. See x-deadzone.
 
   x-scale:
     type: int
@@ -75,20 +79,6 @@ properties:
   invert-y:
     type: boolean
     description: Invert generated REL_Y direction.
-
-  radial:
-    type: boolean
-    description: |
-      Take the distance from the origin before applying the ramp, then share the
-      resulting step out along the two axes.
-
-      Without this the axes are independent: the deadzone is square, and a ramp
-      that rises with distance yields less when that distance is split between
-      two axes than when it all lands on one, so a diagonal push runs slower
-      than a straight one. With it the speed depends only on how far the finger
-      has moved, and the deadzone becomes a circle.
-
-      Costs one integer square root and one divide per axis event.
 
   fixed-center:
     type: boolean
