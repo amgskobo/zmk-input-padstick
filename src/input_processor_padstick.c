@@ -11,7 +11,10 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
+#include <zephyr/spinlock.h>
 #include <drivers/input_processor.h>
+#include <zmk/event_manager.h>
+#include <zmk/events/layer_state_changed.h>
 
 LOG_MODULE_REGISTER(input_processor_padstick, CONFIG_ZMK_LOG_LEVEL);
 
@@ -45,6 +48,13 @@ struct padstick_config {
 };
 
 struct padstick_data {
+	/*
+	 * Guards the origin and the remainders below. They are read on the input
+	 * thread and dropped from whichever thread raises a layer change, and a
+	 * change landing between the two axes of one sample would convert one of
+	 * them against the old origin.
+	 */
+	struct k_spinlock lock;
 	int32_t origin_x;
 	int32_t origin_y;
 	int32_t x_remainder;
@@ -304,7 +314,11 @@ static int padstick_handle_event(const struct device *dev, struct input_event *e
 
 	if (event->type == INPUT_EV_KEY) {
 		if (event->code == INPUT_BTN_TOUCH) {
-			return padstick_handle_touch(event, data, config);
+			k_spinlock_key_t key = k_spin_lock(&data->lock);
+			int ret = padstick_handle_touch(event, data, config);
+
+			k_spin_unlock(&data->lock, key);
+			return ret;
 		}
 
 		if (event->code == INPUT_BTN_0) {
@@ -315,7 +329,11 @@ static int padstick_handle_event(const struct device *dev, struct input_event *e
 	}
 
 	if (event->type == INPUT_EV_ABS) {
-		return padstick_handle_abs_axis(event, data, config);
+		k_spinlock_key_t key = k_spin_lock(&data->lock);
+		int ret = padstick_handle_abs_axis(event, data, config);
+
+		k_spin_unlock(&data->lock, key);
+		return ret;
 	}
 
 	return ZMK_INPUT_PROC_CONTINUE;
@@ -373,3 +391,29 @@ static const struct zmk_input_processor_driver_api padstick_driver_api = {
 			      &padstick_driver_api);
 
 DT_INST_FOREACH_STATUS_OKAY(PADSTICK_INST)
+
+/**
+ * Drop the origin when the layer changes.
+ *
+ * Which processors run is decided per event from the layer active at that
+ * moment, so one contact can be split across two instances of this processor.
+ * Without fixed-center the instance the contact moves to still holds an origin
+ * taken from an earlier touch, and the first sample it sees is turned into the
+ * distance between two unrelated contacts.
+ *
+ * The touch flag is deliberately left alone. Clearing it would silence a
+ * contact until the finger lifted, which on a board that keeps one instance
+ * across every layer would stop the pointer the moment a layer key was pressed.
+ */
+#define PADSTICK_RESYNC(n)                                                                        	{                                                                                          		struct padstick_data *data = DEVICE_DT_INST_GET(n)->data;                          		k_spinlock_key_t key = k_spin_lock(&data->lock);                                   		padstick_reset_contact(data);                                                      		k_spin_unlock(&data->lock, key);                                                   	}
+
+static int padstick_layer_listener(const zmk_event_t *eh) {
+	ARG_UNUSED(eh);
+
+	DT_INST_FOREACH_STATUS_OKAY(PADSTICK_RESYNC)
+
+	return ZMK_EV_EVENT_BUBBLE;
+}
+
+ZMK_LISTENER(padstick_layer, padstick_layer_listener);
+ZMK_SUBSCRIPTION(padstick_layer, zmk_layer_state_changed);
