@@ -24,6 +24,13 @@ LOG_MODULE_REGISTER(input_processor_padstick, CONFIG_ZMK_LOG_LEVEL);
 #define PADSTICK_SCALE_SHIFT 8
 /* Keep signed so negative fixed-point totals divide as negative values. */
 #define PADSTICK_SCALE_ONE ((int32_t)1 << PADSTICK_SCALE_SHIFT)
+/*
+ * A padstick is a velocity control: holding a deflection keeps emitting its
+ * REL step. Keep the cadence here, rather than asking an absolute-coordinate
+ * source driver to resend identical samples. This is intentionally not a DTS
+ * property; it is part of the processor's fixed output semantics.
+ */
+#define PADSTICK_REPEAT_INTERVAL_MS 20
 
 struct padstick_config {
 	int32_t x_deadzone;
@@ -47,14 +54,24 @@ struct padstick_config {
 };
 
 struct padstick_data {
+	/* The input callback and the repeat work both update the coordinate state. */
+	struct k_mutex lock;
+	struct k_work_delayable repeat_work;
+	const struct device *processor;
+	const struct device *input_dev;
+	bool touch_active;
 	/*
-	 * Written from the input thread and cleared from whichever thread raises a
-	 * layer change. No lock: each field is a single aligned store, the clearing
-	 * side only ever invalidates and the reading side only ever re-establishes,
-	 * so a half-seen clear costs at most one more sample against the old origin.
-	 * A lock would not buy the pair of axes either - they arrive as separate
-	 * events, so a change can always land between them - and this path logs on
-	 * every sample, which has no business running with interrupts masked.
+	 * A layer can switch this processor in while a contact is already down, so
+	 * it may not see that contact's BTN_TOUCH press. Two complete coordinate
+	 * frames are enough to distinguish a continuing contact from the one final
+	 * coordinate pair that normally follows BTN_TOUCH release.
+	 */
+	uint8_t unsignaled_contact_frames;
+	/*
+	 * The input callback, repeat worker and layer listener all hold lock while
+	 * changing this contact state. X and Y still arrive as separate events, so a
+	 * pair may naturally contain one coordinate from the preceding report; the
+	 * stored partner is intentionally used for that one event.
 	 */
 	int32_t origin_x;
 	int32_t origin_y;
@@ -88,6 +105,7 @@ static void padstick_reset_contact(struct padstick_data *data) {
 	data->skip_origin_frame = true;
 	data->last_x = PADSTICK_COORD_UNSET;
 	data->last_y = PADSTICK_COORD_UNSET;
+	data->unsignaled_contact_frames = 0;
 }
 
 /*
@@ -255,6 +273,89 @@ static int32_t padstick_apply_axis(char axis, int32_t value, int32_t origin, int
 	return output;
 }
 
+/* Called with data->lock held. A repeat is valid only after this instance has
+ * observed BTN_TOUCH or confirmed a continuing contact from complete frames. */
+static bool padstick_repeat_ready(const struct padstick_data *data) {
+	return data->touch_active && data->input_dev != NULL && !data->skip_origin_frame &&
+	       data->origin_x != PADSTICK_COORD_UNSET && data->origin_y != PADSTICK_COORD_UNSET &&
+	       data->last_x != PADSTICK_COORD_UNSET && data->last_y != PADSTICK_COORD_UNSET;
+}
+
+/* Called with data->lock held. */
+static void padstick_schedule_repeat(struct padstick_data *data) {
+	if (padstick_repeat_ready(data)) {
+		(void)k_work_reschedule(&data->repeat_work, K_MSEC(PADSTICK_REPEAT_INTERVAL_MS));
+	}
+}
+
+/* Called with data->lock held at the end of a converted ABS report frame. */
+static void padstick_note_unsignaled_contact_frame(struct input_event *event,
+								     struct padstick_data *data) {
+	if (data->touch_active || !event->sync) {
+		return;
+	}
+
+	if (data->unsignaled_contact_frames < 2U) {
+		data->unsignaled_contact_frames++;
+	}
+
+	if (data->unsignaled_contact_frames == 2U) {
+		data->touch_active = true;
+		data->input_dev = event->dev;
+		LOG_DBG("inferred continuing touch after layer switch");
+		padstick_schedule_repeat(data);
+	}
+}
+
+static void padstick_repeat_work_handler(struct k_work *work) {
+	struct k_work_delayable *d_work = k_work_delayable_from_work(work);
+	struct padstick_data *data = CONTAINER_OF(d_work, struct padstick_data, repeat_work);
+	const struct padstick_config *config = data->processor->config;
+
+	k_mutex_lock(&data->lock, K_FOREVER);
+
+	if (!padstick_repeat_ready(data)) {
+		k_mutex_unlock(&data->lock);
+		return;
+	}
+
+	int32_t other_x = data->last_y - data->origin_y;
+	int32_t other_y = data->last_x - data->origin_x;
+	int32_t rel_x = padstick_apply_axis('x', data->last_x, data->origin_x,
+					     config->x_deadzone, config->x_scale,
+					     config->x_accel_range, config->x_accel_scale,
+					     config->max_x, config->invert_x,
+					     &data->x_remainder, other_x);
+	int32_t rel_y = padstick_apply_axis('y', data->last_y, data->origin_y,
+					     config->y_deadzone, config->y_scale,
+					     config->y_accel_range, config->y_accel_scale,
+					     config->max_y, config->invert_y,
+					     &data->y_remainder, other_y);
+
+	/*
+	 * Return the synthesized REL pair to the original input device. Its input
+	 * listener therefore applies the same remaining processors (for example
+	 * inertia) as it does to a live trackpad event. Holding the lock makes a
+	 * touch release or layer change wait until this already-started pair is
+	 * delivered, then cancel all later repeats.
+	 */
+	if (rel_x != 0 || rel_y != 0) {
+		int ret = input_report_rel(data->input_dev, INPUT_REL_X, rel_x, false, K_NO_WAIT);
+		if (ret != 0) {
+			LOG_WRN("repeat REL_X report failed: %d", ret);
+		}
+
+		ret = input_report_rel(data->input_dev, INPUT_REL_Y, rel_y, true, K_NO_WAIT);
+		if (ret != 0) {
+			LOG_WRN("repeat REL_Y report failed: %d", ret);
+		}
+
+		/* A fresh ABS event will restart this when the finger leaves deadzone. */
+		padstick_schedule_repeat(data);
+	}
+	k_mutex_unlock(&data->lock);
+}
+
 static int padstick_suppress_event(struct input_event *event) {
 	uint16_t type = event->type;
 	uint16_t code = event->code;
@@ -286,7 +387,10 @@ static int padstick_suppress_event(struct input_event *event) {
  */
 static int padstick_handle_touch(struct input_event *event, struct padstick_data *data,
 				 const struct padstick_config *config) {
+	k_work_cancel_delayable(&data->repeat_work);
 	padstick_reset_contact(data);
+	data->touch_active = event->value != 0;
+	data->input_dev = data->touch_active ? event->dev : NULL;
 	LOG_DBG("touch=%d reset origin/rem", event->value != 0);
 
 	if (config->suppress_btn_touch) {
@@ -375,6 +479,7 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 						   config->x_scale, config->x_accel_range,
 						   config->x_accel_scale, config->max_x,
 						   config->invert_x, &data->x_remainder, other);
+		padstick_schedule_repeat(data);
 		return ZMK_INPUT_PROC_CONTINUE;
 	}
 
@@ -410,6 +515,8 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_d
 						   config->y_scale, config->y_accel_range,
 						   config->y_accel_scale, config->max_y,
 						   config->invert_y, &data->y_remainder, other);
+		padstick_schedule_repeat(data);
+		padstick_note_unsignaled_contact_frame(event, data);
 		return ZMK_INPUT_PROC_CONTINUE;
 	}
 
@@ -424,30 +531,48 @@ static int padstick_handle_event(const struct device *dev, struct input_event *e
 
 	const struct padstick_config *config = dev->config;
 	struct padstick_data *data = dev->data;
+	int ret = ZMK_INPUT_PROC_CONTINUE;
 
-	if (event->type == INPUT_EV_KEY) {
-		if (event->code == INPUT_BTN_TOUCH) {
-			return padstick_handle_touch(event, data, config);
-		}
-
-		if (event->code == INPUT_BTN_0) {
-			return padstick_handle_btn0(event, data, config);
-		}
-
+	if (event->type != INPUT_EV_KEY && event->type != INPUT_EV_ABS) {
 		return ZMK_INPUT_PROC_CONTINUE;
 	}
 
-	if (event->type == INPUT_EV_ABS) {
-		return padstick_handle_abs_axis(event, data, config);
+	k_mutex_lock(&data->lock, K_FOREVER);
+
+	if (event->type == INPUT_EV_KEY) {
+		if (event->code == INPUT_BTN_TOUCH) {
+			ret = padstick_handle_touch(event, data, config);
+			goto out;
+		}
+
+		if (event->code == INPUT_BTN_0) {
+			ret = padstick_handle_btn0(event, data, config);
+			goto out;
+		}
+
+		ret = ZMK_INPUT_PROC_CONTINUE;
+		goto out;
 	}
 
-	return ZMK_INPUT_PROC_CONTINUE;
+	if (event->type == INPUT_EV_ABS) {
+		ret = padstick_handle_abs_axis(event, data, config);
+		goto out;
+	}
+
+out:
+	k_mutex_unlock(&data->lock);
+	return ret;
 }
 
 static int padstick_init(const struct device *dev) {
 	struct padstick_data *data = dev->data;
 	const struct padstick_config *config = dev->config;
 
+	k_mutex_init(&data->lock);
+	k_work_init_delayable(&data->repeat_work, padstick_repeat_work_handler);
+	data->processor = dev;
+	data->input_dev = NULL;
+	data->touch_active = false;
 	data->btn0_press_suppressed = false;
 	padstick_reset_contact(data);
 	LOG_DBG("init x: dz=%d scale=%d accel_range=%d accel_scale=%d max=%d invert=%d",
@@ -497,7 +622,7 @@ static const struct zmk_input_processor_driver_api padstick_driver_api = {
 DT_INST_FOREACH_STATUS_OKAY(PADSTICK_INST)
 
 /**
- * Drop the origin when the layer changes.
+ * Drop the origin and stop repeat output when the layer changes.
  *
  * Which processors run is decided per event from the layer active at that
  * moment, so one contact can be split across two instances of this processor.
@@ -514,6 +639,10 @@ DT_INST_FOREACH_STATUS_OKAY(PADSTICK_INST)
 #define PADSTICK_RESYNC(n)                                                           \
 	{                                                                            \
 		struct padstick_data *data = DEVICE_DT_INST_GET(n)->data;            \
+		k_mutex_lock(&data->lock, K_FOREVER);                                 \
+		k_work_cancel_delayable(&data->repeat_work);                          \
+		data->touch_active = false;                                           \
+		data->input_dev = NULL;                                               \
 		padstick_reset_contact(data);                                        \
 		/*                                                                   \
 		 * A press suppressed here whose release is routed elsewhere would   \
@@ -522,6 +651,7 @@ DT_INST_FOREACH_STATUS_OKAY(PADSTICK_INST)
 		 * exists to prevent.                                                \
 		 */                                                                  \
 		data->btn0_press_suppressed = false;                                 \
+		k_mutex_unlock(&data->lock);                                         \
 	}
 
 static int padstick_layer_listener(const zmk_event_t *eh) {

@@ -4,7 +4,7 @@
 
 A ZMK input processor for using an absolute-reporting trackpad as a small joystick-style pointing surface.
 
-`zmk,input-processor-padstick` ignores the first complete absolute report frame after `INPUT_BTN_TOUCH`, then converts later absolute reports to `INPUT_REL_X` and `INPUT_REL_Y`. By default the next `INPUT_ABS_X` and `INPUT_ABS_Y` values become the temporary touch origin. When `fixed-center` is enabled, the configured `x-center` / `y-center` coordinates are used instead.
+`zmk,input-processor-padstick` ignores the first complete absolute report frame after `INPUT_BTN_TOUCH`, then converts later absolute reports to `INPUT_REL_X` and `INPUT_REL_Y`. By default the next `INPUT_ABS_X` and `INPUT_ABS_Y` values become the temporary touch origin. When `fixed-center` is enabled, the configured `x-center` / `y-center` coordinates are used instead. While that contact remains active, padstick repeats the latest deflection every 20 ms, so holding a direction behaves as a joystick without requiring the source driver to resend identical ABS coordinates.
 
 ## Features
 
@@ -14,6 +14,7 @@ A ZMK input processor for using an absolute-reporting trackpad as a small joysti
 - **Smooth acceleration**: Ramps from fine movement scale to accelerated scale by distance, using integer math only.
 - **Radial response**: Speed depends only on how far the finger is, not on which way it is pushed, and the deadzone is a circle.
 - **Sub-pixel accumulation**: Keeps fractional REL counts per axis so low scale values do not drop small movement.
+- **Held-direction repeat**: Reprocesses the latest complete contact coordinate pair every 20 ms while the finger remains down. The fixed cadence is processor behavior, not an additional DTS parameter.
 - **Optional suppression**: Can consume original ABS, `BTN_TOUCH`, and `BTN_0` events after processing.
 - **Layer-change safe**: Drops the origin when the layer changes, so a contact split across two chains is not measured against an unrelated one.
 - **Split-ready**: Enabled only on the central side for split builds.
@@ -86,6 +87,8 @@ The defaults are tuned for a 1024 x 1024 absolute trackpad. A 48-count deadzone 
 - Acceleration ramps smoothly from `x-scale` / `y-scale` to `x-accel-scale` / `y-accel-scale` across `x-accel-range` / `y-accel-range`.
 - Fractional output is accumulated per axis. For example, with `x-scale = <8>`, repeated 1-count movement outside the deadzone emits `REL_X = 1` every 32 events.
 - Output is clamped by `max-x` / `max-y`; saturation clears the axis remainder.
+- Once both the origin and coordinate pair are known, holding that deflection emits another REL pair every 20 ms. The pair is injected through the original input device, so the rest of the configured listener chain still applies.
+- `BTN_TOUCH` release cancels pending repeat work before another pair can be scheduled.
 
 ### 4. Radial Response
 
@@ -115,9 +118,9 @@ The clamp applies per axis, so it acts as a safety limit rather than the operati
 
 Which processors run is decided per event, from the layer active at that moment, so one contact can be split across two chains. Without this, the instance a contact moves to would still hold an origin taken from an earlier touch and turn its first sample into the distance between two unrelated contacts.
 
-`zmk_layer_state_changed` is therefore subscribed directly, and a layer change drops the origin and the sub-pixel remainders. The next frame is treated as an origin-settle frame, exactly as at touch-down.
+`zmk_layer_state_changed` is therefore subscribed directly. A layer change cancels the held-direction repeat and drops the origin and the sub-pixel remainders. A later contact starts with an origin-settle frame, exactly as at touch-down. This is intentionally conservative: a stored deflection must never be injected into a newly selected processor chain.
 
-The contact flag is deliberately left alone. Clearing it would silence the pointer until the finger lifted, which on a board that keeps one instance across every layer would stop motion the moment a layer key was pressed.
+When a layer selects padstick while a finger is already down, its `BTN_TOUCH` press belongs to the old chain and is not visible here. After the settle frame, padstick waits for two complete synchronized coordinate frames before treating that as a continuing contact and enabling held-direction repeat. One final coordinate pair after a release therefore cannot restart the repeat worker.
 
 `suppress-btn0` never drops a `BTN_0` release whose press was not suppressed here. Passing a release through is always safe - the press it belongs to already reached the host - while dropping one would leave the button held down with nothing left to release it. That record is cleared on a layer change too.
 
