@@ -88,6 +88,7 @@ manifest:
 - 小数相当の出力は軸ごとに蓄積されます。たとえば `x-scale = <8>` の場合、deadzone 外の 1 count 入力が繰り返されると、32 回に 1 回 `REL_X = 1` が出ます。
 - 出力は `max-x` / `max-y` で clamp されます。飽和した場合、その軸の remainder はクリアされます。
 - 原点と座標組の両方が確定した後は、その変位を保持すると 20 ms ごとに次の REL 組を出力します。組は元の input device から注入されるため、listener の残りの processor chain も通常どおり適用されます。
+- 保持方向のrepeatはZephyrのsystem work queueではなくZMKのlow-priority work queueで実行し、連続出力がBluetooth、split、watchdog、device PMのsystem workを遅延させないようにします。
 - `BTN_TOUCH` release は、次の組を予約する前に pending repeat work を停止します。
 
 ### 4. Radial Response
@@ -125,6 +126,13 @@ clamp は軸ごとに効くため、動作点ではなく安全上限として�
 `suppress-btn0` は、**ここで抑制していない押下に対応する `BTN_0` の release は決して破棄しません**。release を通すことは常に安全（対応する押下は既にホストへ届いている）ですが、破棄するとそのボタンが押しっぱなしのまま解放手段を失います。この記録もレイヤ変更時にクリアされます。
 
 ## Debug Logging
+
+### 複数input listener
+
+1つのpadstick processor nodeを複数のinput listenerで共有できます。contact座標、
+origin、小数remainder、保持方向のrepeat work、元のinput device、button抑制状態は
+`input_device_index`ごとに独立します。設定値はnode全体で共有します。不正なruntime
+indexは変換せず通過し、stream 0へaliasしません。
 
 Zephyr logging を有効にし、ZMK の log level を debug にすると、この processor の `LOG_DBG` 出力を有効にできます。たとえば ZMK 設定で `CONFIG_LOG=y` と `CONFIG_ZMK_LOG_LEVEL_DBG=y` を設定します。ログを見るには、USB logging、RTT、UART など、ZMK 側のログ出力 backend も必要です。USB CDC ACM logging を使う場合は `CONFIG_ZMK_USB_LOGGING=y` を使えます。
 

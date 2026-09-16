@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 The ZMK Contributors
+ * Copyright (c) 2026 amgskobo
  *
  * SPDX-License-Identifier: MIT
  */
@@ -14,6 +14,7 @@
 #include <drivers/input_processor.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/layer_state_changed.h>
+#include <zmk/workqueue.h>
 
 LOG_MODULE_REGISTER(input_processor_padstick, CONFIG_ZMK_LOG_LEVEL);
 
@@ -24,6 +25,8 @@ LOG_MODULE_REGISTER(input_processor_padstick, CONFIG_ZMK_LOG_LEVEL);
 #define PADSTICK_SCALE_SHIFT 8
 /* Keep signed so negative fixed-point totals divide as negative values. */
 #define PADSTICK_SCALE_ONE ((int32_t)1 << PADSTICK_SCALE_SHIFT)
+#define PADSTICK_LISTENER_COUNT DT_NUM_INST_STATUS_OKAY(zmk_input_listener)
+#define PADSTICK_STREAM_COUNT MAX(PADSTICK_LISTENER_COUNT, 1)
 /*
  * A padstick is a velocity control: holding a deflection keeps emitting its
  * REL step. Keep the cadence here, rather than asking an absolute-coordinate
@@ -53,11 +56,13 @@ struct padstick_config {
 	bool suppress_btn0;
 };
 
-struct padstick_data {
+struct padstick_data;
+
+struct padstick_stream {
 	/* The input callback and the repeat work both update the coordinate state. */
 	struct k_mutex lock;
 	struct k_work_delayable repeat_work;
-	const struct device *processor;
+	struct padstick_data *owner;
 	const struct device *input_dev;
 	bool touch_active;
 	/*
@@ -97,7 +102,12 @@ struct padstick_data {
 	bool btn0_press_suppressed;
 };
 
-static void padstick_reset_contact(struct padstick_data *data) {
+struct padstick_data {
+	const struct device *processor;
+	struct padstick_stream streams[PADSTICK_STREAM_COUNT];
+};
+
+static void padstick_reset_contact(struct padstick_stream *data) {
 	data->origin_x = PADSTICK_COORD_UNSET;
 	data->origin_y = PADSTICK_COORD_UNSET;
 	data->x_remainder = 0;
@@ -118,7 +128,7 @@ static void padstick_reset_contact(struct padstick_data *data) {
  * would fall back to its own displacement alone and come out short on anything
  * but a straight push.
  */
-static void padstick_seed_fixed_origin(struct padstick_data *data,
+static void padstick_seed_fixed_origin(struct padstick_stream *data,
 				       const struct padstick_config *config) {
 	if (data->origin_x == PADSTICK_COORD_UNSET) {
 		data->origin_x = config->x_center;
@@ -275,22 +285,24 @@ static int32_t padstick_apply_axis(char axis, int32_t value, int32_t origin, int
 
 /* Called with data->lock held. A repeat is valid only after this instance has
  * observed BTN_TOUCH or confirmed a continuing contact from complete frames. */
-static bool padstick_repeat_ready(const struct padstick_data *data) {
+static bool padstick_repeat_ready(const struct padstick_stream *data) {
 	return data->touch_active && data->input_dev != NULL && !data->skip_origin_frame &&
 	       data->origin_x != PADSTICK_COORD_UNSET && data->origin_y != PADSTICK_COORD_UNSET &&
 	       data->last_x != PADSTICK_COORD_UNSET && data->last_y != PADSTICK_COORD_UNSET;
 }
 
 /* Called with data->lock held. */
-static void padstick_schedule_repeat(struct padstick_data *data) {
+static void padstick_schedule_repeat(struct padstick_stream *data) {
 	if (padstick_repeat_ready(data)) {
-		(void)k_work_reschedule(&data->repeat_work, K_MSEC(PADSTICK_REPEAT_INTERVAL_MS));
+		(void)k_work_reschedule_for_queue(zmk_workqueue_lowprio_work_q(),
+						 &data->repeat_work,
+						 K_MSEC(PADSTICK_REPEAT_INTERVAL_MS));
 	}
 }
 
 /* Called with data->lock held at the end of a converted ABS report frame. */
 static void padstick_note_unsignaled_contact_frame(struct input_event *event,
-								     struct padstick_data *data) {
+								     struct padstick_stream *data) {
 	if (data->touch_active || !event->sync) {
 		return;
 	}
@@ -309,8 +321,8 @@ static void padstick_note_unsignaled_contact_frame(struct input_event *event,
 
 static void padstick_repeat_work_handler(struct k_work *work) {
 	struct k_work_delayable *d_work = k_work_delayable_from_work(work);
-	struct padstick_data *data = CONTAINER_OF(d_work, struct padstick_data, repeat_work);
-	const struct padstick_config *config = data->processor->config;
+	struct padstick_stream *data = CONTAINER_OF(d_work, struct padstick_stream, repeat_work);
+	const struct padstick_config *config = data->owner->processor->config;
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 
@@ -385,7 +397,7 @@ static int padstick_suppress_event(struct input_event *event) {
  * missed the release that ended the previous contact; skipping the reset then
  * would carry that contact's origin and remainders into the new one.
  */
-static int padstick_handle_touch(struct input_event *event, struct padstick_data *data,
+static int padstick_handle_touch(struct input_event *event, struct padstick_stream *data,
 				 const struct padstick_config *config) {
 	k_work_cancel_delayable(&data->repeat_work);
 	padstick_reset_contact(data);
@@ -406,7 +418,7 @@ static int padstick_handle_touch(struct input_event *event, struct padstick_data
  * its release, so the button can never be left stuck down. Passing a release
  * through is always safe - the press it belongs to was already delivered.
  */
-static int padstick_handle_btn0(struct input_event *event, struct padstick_data *data,
+static int padstick_handle_btn0(struct input_event *event, struct padstick_stream *data,
 				const struct padstick_config *config) {
 	if (!config->suppress_btn0) {
 		data->btn0_press_suppressed = false;
@@ -425,7 +437,7 @@ static int padstick_handle_btn0(struct input_event *event, struct padstick_data 
 	return padstick_suppress_event(event);
 }
 
-static int padstick_handle_abs_axis(struct input_event *event, struct padstick_data *data,
+static int padstick_handle_abs_axis(struct input_event *event, struct padstick_stream *data,
 				    const struct padstick_config *config) {
 	if (event->code == INPUT_ABS_X) {
 		data->last_x = event->value;
@@ -527,11 +539,21 @@ static int padstick_handle_event(const struct device *dev, struct input_event *e
 				 uint32_t param2, struct zmk_input_processor_state *state) {
 	ARG_UNUSED(param1);
 	ARG_UNUSED(param2);
-	ARG_UNUSED(state);
 
 	const struct padstick_config *config = dev->config;
-	struct padstick_data *data = dev->data;
+	struct padstick_data *owner = dev->data;
+	struct padstick_stream *data;
 	int ret = ZMK_INPUT_PROC_CONTINUE;
+
+	if (state == NULL) {
+		data = &owner->streams[0];
+	} else if (state->input_device_index >= PADSTICK_STREAM_COUNT) {
+		LOG_ERR("Input device index %u exceeds the %u allocated padstick streams",
+			state->input_device_index, PADSTICK_STREAM_COUNT);
+		return ZMK_INPUT_PROC_CONTINUE;
+	} else {
+		data = &owner->streams[state->input_device_index];
+	}
 
 	if (event->type != INPUT_EV_KEY && event->type != INPUT_EV_ABS) {
 		return ZMK_INPUT_PROC_CONTINUE;
@@ -568,13 +590,18 @@ static int padstick_init(const struct device *dev) {
 	struct padstick_data *data = dev->data;
 	const struct padstick_config *config = dev->config;
 
-	k_mutex_init(&data->lock);
-	k_work_init_delayable(&data->repeat_work, padstick_repeat_work_handler);
 	data->processor = dev;
-	data->input_dev = NULL;
-	data->touch_active = false;
-	data->btn0_press_suppressed = false;
-	padstick_reset_contact(data);
+	for (size_t i = 0U; i < PADSTICK_STREAM_COUNT; i++) {
+		struct padstick_stream *stream = &data->streams[i];
+
+		k_mutex_init(&stream->lock);
+		k_work_init_delayable(&stream->repeat_work, padstick_repeat_work_handler);
+		stream->owner = data;
+		stream->input_dev = NULL;
+		stream->touch_active = false;
+		stream->btn0_press_suppressed = false;
+		padstick_reset_contact(stream);
+	}
 	LOG_DBG("init x: dz=%d scale=%d accel_range=%d accel_scale=%d max=%d invert=%d",
 		config->x_deadzone, config->x_scale, config->x_accel_range,
 		config->x_accel_scale, config->max_x, config->invert_x);
@@ -638,20 +665,17 @@ DT_INST_FOREACH_STATUS_OKAY(PADSTICK_INST)
  */
 #define PADSTICK_RESYNC(n)                                                           \
 	{                                                                            \
-		struct padstick_data *data = DEVICE_DT_INST_GET(n)->data;            \
-		k_mutex_lock(&data->lock, K_FOREVER);                                 \
-		k_work_cancel_delayable(&data->repeat_work);                          \
-		data->touch_active = false;                                           \
-		data->input_dev = NULL;                                               \
-		padstick_reset_contact(data);                                        \
-		/*                                                                   \
-		 * A press suppressed here whose release is routed elsewhere would   \
-		 * leave this set for good, and the next unrelated release to reach  \
-		 * this instance would be swallowed - the stuck button the record    \
-		 * exists to prevent.                                                \
-		 */                                                                  \
-		data->btn0_press_suppressed = false;                                 \
-		k_mutex_unlock(&data->lock);                                         \
+		struct padstick_data *owner = DEVICE_DT_INST_GET(n)->data;           \
+		for (size_t i = 0U; i < PADSTICK_STREAM_COUNT; i++) {                \
+			struct padstick_stream *data = &owner->streams[i];              \
+			k_mutex_lock(&data->lock, K_FOREVER);                         \
+			k_work_cancel_delayable(&data->repeat_work);                  \
+			data->touch_active = false;                                   \
+			data->input_dev = NULL;                                       \
+			padstick_reset_contact(data);                                 \
+			data->btn0_press_suppressed = false;                          \
+			k_mutex_unlock(&data->lock);                                  \
+		}                                                                    \
 	}
 
 static int padstick_layer_listener(const zmk_event_t *eh) {
