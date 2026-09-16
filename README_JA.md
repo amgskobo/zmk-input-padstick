@@ -88,6 +88,7 @@ manifest:
 - 小数相当の出力は軸ごとに蓄積されます。たとえば `x-scale = <8>` の場合、deadzone 外の 1 count 入力が繰り返されると、32 回に 1 回 `REL_X = 1` が出ます。
 - 出力は `max-x` / `max-y` で clamp されます。飽和した場合、その軸の remainder はクリアされます。
 - 原点と座標組の両方が確定した後は、その変位を保持すると 20 ms ごとに次の REL 組を出力します。組は元の input device から注入されるため、listener の残りの processor chain も通常どおり適用されます。
+- 保持方向のrepeatはZephyrのsystem work queueではなくZMKのlow-priority work queueで実行し、連続出力がBluetooth、split、watchdog、device PMのsystem workを遅延させないようにします。
 - `BTN_TOUCH` release は、次の組を予約する前に pending repeat work を停止します。
 
 ### 4. Radial Response

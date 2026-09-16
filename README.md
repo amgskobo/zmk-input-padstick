@@ -88,6 +88,7 @@ The defaults are tuned for a 1024 x 1024 absolute trackpad. A 48-count deadzone 
 - Fractional output is accumulated per axis. For example, with `x-scale = <8>`, repeated 1-count movement outside the deadzone emits `REL_X = 1` every 32 events.
 - Output is clamped by `max-x` / `max-y`; saturation clears the axis remainder.
 - Once both the origin and coordinate pair are known, holding that deflection emits another REL pair every 20 ms. The pair is injected through the original input device, so the rest of the configured listener chain still applies.
+- Held-direction repeat runs on ZMK's low-priority work queue, not Zephyr's system work queue, so continuous output cannot delay Bluetooth, split, watchdog, or device-PM system work.
 - `BTN_TOUCH` release cancels pending repeat work before another pair can be scheduled.
 
 ### 4. Radial Response

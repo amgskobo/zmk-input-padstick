@@ -14,6 +14,7 @@
 #include <drivers/input_processor.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/layer_state_changed.h>
+#include <zmk/workqueue.h>
 
 LOG_MODULE_REGISTER(input_processor_padstick, CONFIG_ZMK_LOG_LEVEL);
 
@@ -284,7 +285,9 @@ static bool padstick_repeat_ready(const struct padstick_data *data) {
 /* Called with data->lock held. */
 static void padstick_schedule_repeat(struct padstick_data *data) {
 	if (padstick_repeat_ready(data)) {
-		(void)k_work_reschedule(&data->repeat_work, K_MSEC(PADSTICK_REPEAT_INTERVAL_MS));
+		(void)k_work_reschedule_for_queue(zmk_workqueue_lowprio_work_q(),
+						 &data->repeat_work,
+						 K_MSEC(PADSTICK_REPEAT_INTERVAL_MS));
 	}
 }
 
