@@ -1,4 +1,4 @@
-# Copyright (c) 2026 The ZMK Contributors
+# Copyright (c) 2026 amgskobo
 # SPDX-License-Identifier: MIT
 
 DT_COMPAT_ZMK_INPUT_PROCESSOR_PADSTICK := zmk,input-processor-padstick
