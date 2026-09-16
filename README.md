@@ -127,6 +127,14 @@ When a layer selects padstick while a finger is already down, its `BTN_TOUCH` pr
 
 ## Debug Logging
 
+### Multiple input listeners
+
+One padstick processor node may be shared by multiple input listeners. Contact
+coordinates, origins, fractional remainders, held-direction repeat work, the
+original input device and suppressed-button state are isolated by
+`input_device_index`. Settings remain node-wide. An invalid runtime index is
+passed through and never aliases stream zero.
+
 Enable Zephyr logging and set ZMK's log level to debug to enable `LOG_DBG` output from this processor. For example, set `CONFIG_LOG=y` and `CONFIG_ZMK_LOG_LEVEL_DBG=y` in your ZMK config. Your build still needs a ZMK log backend, such as USB logging, RTT, or UART, to view the logs. `CONFIG_ZMK_USB_LOGGING=y` can be used when you want USB CDC ACM logging.
 
 Debug logs include touch resets, stored origin coordinates, raw ABS coordinates, origin deltas, post-deadzone magnitude, fixed-point scaled value, incoming and outgoing sub-pixel remainder, generated REL output, saturation, and suppressed input events.

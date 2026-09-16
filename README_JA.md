@@ -127,6 +127,13 @@ clamp は軸ごとに効くため、動作点ではなく安全上限として�
 
 ## Debug Logging
 
+### 複数input listener
+
+1つのpadstick processor nodeを複数のinput listenerで共有できます。contact座標、
+origin、小数remainder、保持方向のrepeat work、元のinput device、button抑制状態は
+`input_device_index`ごとに独立します。設定値はnode全体で共有します。不正なruntime
+indexは変換せず通過し、stream 0へaliasしません。
+
 Zephyr logging を有効にし、ZMK の log level を debug にすると、この processor の `LOG_DBG` 出力を有効にできます。たとえば ZMK 設定で `CONFIG_LOG=y` と `CONFIG_ZMK_LOG_LEVEL_DBG=y` を設定します。ログを見るには、USB logging、RTT、UART など、ZMK 側のログ出力 backend も必要です。USB CDC ACM logging を使う場合は `CONFIG_ZMK_USB_LOGGING=y` を使えます。
 
 debug log には、touch reset、保存された原点座標、raw ABS 座標、原点からの delta、deadzone 後の magnitude、fixed-point scaled 値、入力/出力 remainder、生成された REL 出力、飽和、抑制された入力イベントが含まれます。
