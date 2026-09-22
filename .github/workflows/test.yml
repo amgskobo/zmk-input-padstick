@@ -1,0 +1,31 @@
+# Copyright (c) 2026 amgskobo
+# SPDX-License-Identifier: MIT
+
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [upstream, dya]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and run the ${{ matrix.variant }} ZMK fixtures
+        run: bash ./tests/run-integration-docker.sh ${{ matrix.variant }}

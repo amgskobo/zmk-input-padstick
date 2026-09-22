@@ -1,3 +1,6 @@
+# Copyright (c) 2026 amgskobo
+# SPDX-License-Identifier: MIT
+
 if(CONFIG_ZMK_INPUT_PROCESSOR_PADSTICK)
     add_subdirectory(src)
     # drivers/input_processor.h is provided by the ZMK application include tree.

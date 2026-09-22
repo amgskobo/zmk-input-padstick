@@ -1,0 +1,9 @@
+# Copyright (c) 2026 amgskobo
+# SPDX-License-Identifier: MIT
+
+if SHIELD_PADSTICK_TEST
+
+config ZMK_KEYBOARD_NAME
+    default "Padstick Test"
+
+endif

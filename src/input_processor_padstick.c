@@ -430,7 +430,8 @@ static int padstick_handle_btn0(struct input_event *event, struct padstick_strea
 	data->btn0_press_suppressed = event->value != 0;
 
 	if (!event->value && !was_suppressed) {
-		LOG_WRN("Passing BTN_0 release: its press was not suppressed here");
+		/* The expected case after a layer change, not a fault: debug only. */
+		LOG_DBG("Passing BTN_0 release: its press was not suppressed here");
 		return ZMK_INPUT_PROC_CONTINUE;
 	}
 
@@ -548,8 +549,8 @@ static int padstick_handle_event(const struct device *dev, struct input_event *e
 	if (state == NULL) {
 		data = &owner->streams[0];
 	} else if (state->input_device_index >= PADSTICK_STREAM_COUNT) {
-		LOG_ERR("Input device index %u exceeds the %u allocated padstick streams",
-			state->input_device_index, PADSTICK_STREAM_COUNT);
+		/* No stream of its own: pass through rather than take stream zero's, and
+		 * without a log line per event from a source that keeps sending. */
 		return ZMK_INPUT_PROC_CONTINUE;
 	} else {
 		data = &owner->streams[state->input_device_index];

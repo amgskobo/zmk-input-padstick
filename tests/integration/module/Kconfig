@@ -1,0 +1,6 @@
+# Copyright (c) 2026 amgskobo
+# SPDX-License-Identifier: MIT
+
+config ZMK_INPUT_PADSTICK_TEST
+    bool "Run padstick runtime self-tests"
+    depends on ZMK_INPUT_PROCESSOR_PADSTICK

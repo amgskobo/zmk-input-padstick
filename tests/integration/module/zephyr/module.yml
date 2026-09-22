@@ -1,9 +1,7 @@
 # Copyright (c) 2026 amgskobo
 # SPDX-License-Identifier: MIT
 
-name: zmk-input-padstick
+name: zmk-input-padstick-test
 build:
   cmake: .
   kconfig: Kconfig
-  settings:
-    dts_root: .

@@ -1,5 +1,7 @@
 # zmk-input-padstick
 
+[![Test](https://github.com/amgskobo/zmk-input-padstick/actions/workflows/test.yml/badge.svg)](https://github.com/amgskobo/zmk-input-padstick/actions/workflows/test.yml)
+
 [日本語](README_JA.md)
 
 A ZMK input processor for using an absolute-reporting trackpad as a small joystick-style pointing surface.
@@ -125,15 +127,15 @@ When a layer selects padstick while a finger is already down, its `BTN_TOUCH` pr
 
 `suppress-btn0` never drops a `BTN_0` release whose press was not suppressed here. Passing a release through is always safe - the press it belongs to already reached the host - while dropping one would leave the button held down with nothing left to release it. That record is cleared on a layer change too.
 
-## Debug Logging
-
-### Multiple input listeners
+### 7. Multiple Input Listeners
 
 One padstick processor node may be shared by multiple input listeners. Contact
 coordinates, origins, fractional remainders, held-direction repeat work, the
 original input device and suppressed-button state are isolated by
 `input_device_index`. Settings remain node-wide. An invalid runtime index is
-passed through and never aliases stream zero.
+passed through without a log line and never aliases stream zero.
+
+## Debug Logging
 
 Enable Zephyr logging and set ZMK's log level to debug to enable `LOG_DBG` output from this processor. For example, set `CONFIG_LOG=y` and `CONFIG_ZMK_LOG_LEVEL_DBG=y` in your ZMK config. Your build still needs a ZMK log backend, such as USB logging, RTT, or UART, to view the logs. `CONFIG_ZMK_USB_LOGGING=y` can be used when you want USB CDC ACM logging.
 
@@ -163,6 +165,20 @@ Debug logs include touch resets, stored origin coordinates, raw ABS coordinates,
 | `suppress-btn0` | bool | false | Suppress `BTN_0` events when the trackpad reports a physical click. |
 
 Scale and acceleration scale values are clamped to `0..4096` at runtime. Deadzone and max values are clamped to non-negative values.
+
+## Tests
+
+```sh
+bash ./tests/run-integration-docker.sh upstream
+bash ./tests/run-integration-docker.sh dya
+```
+
+Each variant builds a firmware fixture in which two input listeners share one
+padstick node, then runs native_sim self-tests against that ZMK: an
+out-of-range listener index passes through untouched, two listeners keep
+their own contacts, `BTN_0` suppression stays paired per listener, and a layer
+change drops the origin. `upstream` uses ZMK `main`; `dya` uses the DYA ZMK
+fork. GitHub Actions runs both on every pull request and on pushes to `main`.
 
 ## License
 

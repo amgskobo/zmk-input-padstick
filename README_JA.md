@@ -1,5 +1,7 @@
 # zmk-input-padstick
 
+[![Test](https://github.com/amgskobo/zmk-input-padstick/actions/workflows/test.yml/badge.svg)](https://github.com/amgskobo/zmk-input-padstick/actions/workflows/test.yml)
+
 [English](README.md)
 
 絶対座標を報告するトラックパッドを、小さなジョイスティックのようなポインティング面として使うための ZMK input processor です。
@@ -125,14 +127,14 @@ clamp は軸ごとに効くため、動作点ではなく安全上限として�
 
 `suppress-btn0` は、**ここで抑制していない押下に対応する `BTN_0` の release は決して破棄しません**。release を通すことは常に安全（対応する押下は既にホストへ届いている）ですが、破棄するとそのボタンが押しっぱなしのまま解放手段を失います。この記録もレイヤ変更時にクリアされます。
 
-## Debug Logging
-
-### 複数input listener
+### 7. 複数input listener
 
 1つのpadstick processor nodeを複数のinput listenerで共有できます。contact座標、
 origin、小数remainder、保持方向のrepeat work、元のinput device、button抑制状態は
 `input_device_index`ごとに独立します。設定値はnode全体で共有します。不正なruntime
-indexは変換せず通過し、stream 0へaliasしません。
+indexはログを出さずに変換せず通過し、stream 0へaliasしません。
+
+## Debug Logging
 
 Zephyr logging を有効にし、ZMK の log level を debug にすると、この processor の `LOG_DBG` 出力を有効にできます。たとえば ZMK 設定で `CONFIG_LOG=y` と `CONFIG_ZMK_LOG_LEVEL_DBG=y` を設定します。ログを見るには、USB logging、RTT、UART など、ZMK 側のログ出力 backend も必要です。USB CDC ACM logging を使う場合は `CONFIG_ZMK_USB_LOGGING=y` を使えます。
 
@@ -162,6 +164,19 @@ debug log には、touch reset、保存された原点座標、raw ABS 座標、
 | `suppress-btn0` | bool | false | トラックパッドが物理クリックとして報告する `BTN_0` event を消費します。 |
 
 scale と accel scale は runtime で `0..4096` に clamp されます。deadzone と max は負にならないように補正されます。
+
+## テスト
+
+```sh
+bash ./tests/run-integration-docker.sh upstream
+bash ./tests/run-integration-docker.sh dya
+```
+
+各variantで、2つのinput listenerが1つのpadstick nodeを共有するファームウェアfixtureをビルドし、
+そのZMKでnative_simのself-testを実行します。範囲外のlistener indexが変更されずに通過すること、
+2つのlistenerが互いの接触状態を上書きしないこと、`BTN_0` の抑制がlistenerごとに対になること、
+レイヤ変更で原点が破棄されることを確認します。`upstream` はZMK `main`、`dya` はDYA ZMK forkを
+使います。GitHub Actions は pull request ごとと `main` への push で両方を実行します。
 
 ## License
 

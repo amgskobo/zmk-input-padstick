@@ -1,0 +1,78 @@
+/*
+ * Copyright (c) 2026 amgskobo
+ * SPDX-License-Identifier: MIT
+ */
+
+#include <physical_layouts.dtsi>
+#include <dt-bindings/zmk/matrix_transform.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zmk-input-padstick/input_processor_padstick.dtsi>
+
+/ {
+    chosen {
+        zmk,kscan = &padstick_kscan;
+        zmk,physical-layout = &padstick_layout;
+    };
+
+    padstick_kscan: padstick_kscan {
+        compatible = "zmk,kscan-mock";
+        rows = <1>;
+        columns = <1>;
+        events = <>;
+    };
+
+    padstick_transform: padstick_transform {
+        compatible = "zmk,matrix-transform";
+        rows = <1>;
+        columns = <1>;
+        map = <RC(0, 0)>;
+    };
+
+    padstick_layout: padstick_layout {
+        compatible = "zmk,physical-layout";
+        display-name = "Padstick test";
+        transform = <&padstick_transform>;
+        keys = <&key_physical_attrs 100 100 0 0 0 0 0>;
+    };
+
+    pad_source_a: pad_source_a {
+        compatible = "zmk,input-mock";
+        event-period = <100>;
+        events = <INPUT_EV_KEY INPUT_BTN_TOUCH 1 0
+                  INPUT_EV_ABS INPUT_ABS_X 512 0
+                  INPUT_EV_ABS INPUT_ABS_Y 512 1
+                  INPUT_EV_ABS INPUT_ABS_X 700 0
+                  INPUT_EV_ABS INPUT_ABS_Y 512 1
+                  INPUT_EV_KEY INPUT_BTN_TOUCH 0 1>;
+    };
+
+    pad_source_b: pad_source_b {
+        compatible = "zmk,input-mock";
+        event-period = <100>;
+        events = <INPUT_EV_KEY INPUT_BTN_TOUCH 1 0
+                  INPUT_EV_ABS INPUT_ABS_X 512 0
+                  INPUT_EV_ABS INPUT_ABS_Y 512 1
+                  INPUT_EV_ABS INPUT_ABS_X 512 0
+                  INPUT_EV_ABS INPUT_ABS_Y 300 1
+                  INPUT_EV_KEY INPUT_BTN_TOUCH 0 1>;
+    };
+
+    pad_listener_a {
+        compatible = "zmk,input-listener";
+        device = <&pad_source_a>;
+        input-processors = <&padstick>;
+    };
+
+    /* Compile-test two listener indexes sharing one stateful processor node. */
+    pad_listener_b {
+        compatible = "zmk,input-listener";
+        device = <&pad_source_b>;
+        input-processors = <&padstick>;
+    };
+};
+
+&padstick {
+    fixed-center;
+    suppress-btn-touch;
+    suppress-btn0;
+};

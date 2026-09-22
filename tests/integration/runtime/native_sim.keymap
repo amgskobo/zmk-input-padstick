@@ -1,0 +1,73 @@
+/*
+ * Copyright (c) 2026 amgskobo
+ * SPDX-License-Identifier: MIT
+ */
+
+#include <behaviors.dtsi>
+#include <dt-bindings/zmk/keys.h>
+#include <dt-bindings/zmk/kscan_mock.h>
+
+/ {
+    keymap {
+        compatible = "zmk,keymap";
+
+        base {
+            bindings = <&kp A &kp B &kp C &kp D>;
+        };
+
+        other {
+            bindings = <&trans &trans &trans &trans>;
+        };
+    };
+
+    /* Unit scale and no deadzone, so a displacement comes out as the same count. */
+    padstick_runtime_test: padstick_runtime_test {
+        compatible = "zmk,input-processor-padstick";
+        #input-processor-cells = <0>;
+        x-deadzone = <0>;
+        y-deadzone = <0>;
+        x-scale = <256>;
+        y-scale = <256>;
+        x-accel-range = <0>;
+        y-accel-range = <0>;
+        max-x = <127>;
+        max-y = <127>;
+        suppress-abs;
+        suppress-btn-touch;
+        suppress-btn0;
+    };
+
+    /*
+     * Two idle sources and their listeners. They send nothing; they only make
+     * sure the processor has at least two streams, which the self-tests drive
+     * directly.
+     */
+    idle_source_a: idle_source_a {
+        compatible = "zmk,input-mock";
+        event-period = <100>;
+        events = <>;
+    };
+
+    idle_source_b: idle_source_b {
+        compatible = "zmk,input-mock";
+        event-period = <100>;
+        events = <>;
+    };
+
+    idle_listener_a {
+        compatible = "zmk,input-listener";
+        device = <&idle_source_a>;
+        input-processors = <&padstick_runtime_test>;
+    };
+
+    idle_listener_b {
+        compatible = "zmk,input-listener";
+        device = <&idle_source_b>;
+        input-processors = <&padstick_runtime_test>;
+    };
+};
+
+/* An empty mock exits at boot; one late press keeps the process up for the tests. */
+&kscan {
+    events = <ZMK_MOCK_PRESS(0,0,30000)>;
+};
