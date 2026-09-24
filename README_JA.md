@@ -168,9 +168,14 @@ scale と accel scale は runtime で `0..4096` に clamp されます。deadzon
 ## テスト
 
 ```sh
+bash ./tests/run-math-docker.sh
 bash ./tests/run-integration-docker.sh upstream
 bash ./tests/run-integration-docker.sh dya
 ```
+
+ホストテストはdriver本体から演算5関数を取り出し、最適化・ASan/UBSan・gcovで
+実行します。CIはその5関数の行・分岐100%を要求します。Zephyr側processor全体の
+カバレッジではありません。
 
 各variantで、2つのinput listenerが1つのpadstick nodeを共有するファームウェアfixtureをビルドし、
 そのZMKでnative_simのself-testを実行します。範囲外のlistener indexが変更されずに通過すること、
