@@ -244,10 +244,9 @@ static int32_t padstick_apply_axis(char axis, int32_t value, int32_t origin, int
 
 	int32_t scaled = padstick_scale_distance(magnitude, accel_range, scale, accel_scale);
 
-	if (reach > 0) {
-		/* Share the step out along this axis: distance_on_axis / distance. */
-		scaled = (int32_t)(((int64_t)scaled * (int64_t)axis_distance) / (int64_t)reach);
-	}
+	/* The nonpositive case returned above: deadzone >= 0 and reach > deadzone,
+	 * so this divisor cannot be zero. Share the step across both axes. */
+	scaled = (int32_t)(((int64_t)scaled * (int64_t)axis_distance) / (int64_t)reach);
 
 	if ((delta < 0) != invert) {
 		scaled = -scaled;

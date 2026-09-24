@@ -169,9 +169,15 @@ Scale and acceleration scale values are clamped to `0..4096` at runtime. Deadzon
 ## Tests
 
 ```sh
+bash ./tests/run-math-docker.sh
 bash ./tests/run-integration-docker.sh upstream
 bash ./tests/run-integration-docker.sh dya
 ```
+
+The host suite compiles the driver's actual arithmetic functions under
+optimized, ASan/UBSan, and gcov builds. CI requires 100% line and branch
+coverage of those five functions, including radial clamping and saturation;
+the complete Zephyr-facing processor is not covered by that percentage.
 
 Each variant builds a firmware fixture in which two input listeners share one
 padstick node, then runs native_sim self-tests against that ZMK: an
