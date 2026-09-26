@@ -100,6 +100,16 @@ struct padstick_stream {
 	 * button held down on the host with nothing left to release it.
 	 */
 	bool btn0_press_suppressed;
+	/*
+	 * Set when a repeat pair has been queued and not yet seen back here. The
+	 * input queue is small and does not block: while the listener is held up -
+	 * a congested host link can take 100 ms over one report - a repeat every
+	 * 20 ms fills it, and whatever arrives next is dropped, the pad's own
+	 * release or the one ZMK reports for a split peripheral that disconnected
+	 * included. The repeat then outlives the contact. One pair at a time keeps
+	 * the stick at the pace the listener really goes.
+	 */
+	bool repeat_in_flight;
 };
 
 struct padstick_data {
@@ -116,6 +126,7 @@ static void padstick_reset_contact(struct padstick_stream *data) {
 	data->last_x = PADSTICK_COORD_UNSET;
 	data->last_y = PADSTICK_COORD_UNSET;
 	data->unsignaled_contact_frames = 0;
+	data->repeat_in_flight = false;
 }
 
 /*
@@ -127,16 +138,14 @@ static void padstick_reset_contact(struct padstick_stream *data) {
  * both to measure the distance from the center: the axis that arrives first
  * would fall back to its own displacement alone and come out short on anything
  * but a straight push.
+ *
+ * Both are unset whenever this runs: a contact reset clears them together and
+ * this is the only thing that sets them while the center is fixed.
  */
 static void padstick_seed_fixed_origin(struct padstick_stream *data,
 				       const struct padstick_config *config) {
-	if (data->origin_x == PADSTICK_COORD_UNSET) {
-		data->origin_x = config->x_center;
-	}
-
-	if (data->origin_y == PADSTICK_COORD_UNSET) {
-		data->origin_y = config->y_center;
-	}
+	data->origin_x = config->x_center;
+	data->origin_y = config->y_center;
 }
 
 static int32_t padstick_abs_i32(int32_t value) {
@@ -149,6 +158,23 @@ static int32_t padstick_abs_i32(int32_t value) {
 
 static int32_t padstick_clamp_i32(int32_t value, int32_t min_value, int32_t max_value) {
 	return MIN(MAX(value, min_value), max_value);
+}
+
+/*
+ * How far a coordinate is from its origin. Both are whatever the input device
+ * reported, so the difference is taken wide and saturated rather than left to
+ * overflow when a source sends a value near the ends of the range.
+ */
+static int32_t padstick_offset(int32_t value, int32_t origin) {
+	const int64_t offset = (int64_t)value - origin;
+
+	if (offset > INT32_MAX) {
+		return INT32_MAX;
+	}
+	if (offset < INT32_MIN) {
+		return INT32_MIN;
+	}
+	return (int32_t)offset;
 }
 
 /*
@@ -190,7 +216,9 @@ static int32_t padstick_scale_distance(int32_t distance, int32_t accel_range, in
 	int32_t ramp_scale = accel_scale;
 
 	if (accel_range > 1) {
-		int32_t ramp_ratio = ((ramp_distance - 1) << PADSTICK_SCALE_SHIFT) / (accel_range - 1);
+		/* Multiplied rather than shifted: a distance of zero makes the
+		 * factor -1, and shifting a negative value is undefined. */
+		int32_t ramp_ratio = ((ramp_distance - 1) * PADSTICK_SCALE_ONE) / (accel_range - 1);
 		ramp_scale = scale + ((scale_span * ramp_ratio) >> PADSTICK_SCALE_SHIFT);
 	}
 
@@ -219,7 +247,7 @@ static int32_t padstick_apply_axis(char axis, int32_t value, int32_t origin, int
 				   int32_t scale, int32_t accel_range,
 				   int32_t accel_scale, int32_t max_value, bool invert,
 				   int32_t *remainder, int32_t other_delta) {
-	int32_t delta = value - origin;
+	int32_t delta = padstick_offset(value, origin);
 	int32_t axis_distance = MIN(padstick_abs_i32(delta), PADSTICK_DISTANCE_MAX);
 	uint32_t a = (uint32_t)axis_distance;
 	uint32_t b = (uint32_t)MIN(padstick_abs_i32(other_delta), PADSTICK_DISTANCE_MAX);
@@ -306,16 +334,16 @@ static void padstick_note_unsignaled_contact_frame(struct input_event *event,
 		return;
 	}
 
-	if (data->unsignaled_contact_frames < 2U) {
-		data->unsignaled_contact_frames++;
+	/* Every path that clears touch_active also zeroes this count, and the
+	 * second frame sets touch_active, so it never passes two. */
+	if (++data->unsignaled_contact_frames < 2U) {
+		return;
 	}
 
-	if (data->unsignaled_contact_frames == 2U) {
-		data->touch_active = true;
-		data->input_dev = event->dev;
-		LOG_DBG("inferred continuing touch after layer switch");
-		padstick_schedule_repeat(data);
-	}
+	data->touch_active = true;
+	data->input_dev = event->dev;
+	LOG_DBG("inferred continuing touch after layer switch");
+	padstick_schedule_repeat(data);
 }
 
 static void padstick_repeat_work_handler(struct k_work *work) {
@@ -330,8 +358,15 @@ static void padstick_repeat_work_handler(struct k_work *work) {
 		return;
 	}
 
-	int32_t other_x = data->last_y - data->origin_y;
-	int32_t other_y = data->last_x - data->origin_x;
+	if (data->repeat_in_flight) {
+		/* The last pair is still queued: wait for it rather than add to it. */
+		padstick_schedule_repeat(data);
+		k_mutex_unlock(&data->lock);
+		return;
+	}
+
+	int32_t other_x = padstick_offset(data->last_y, data->origin_y);
+	int32_t other_y = padstick_offset(data->last_x, data->origin_x);
 	int32_t rel_x = padstick_apply_axis('x', data->last_x, data->origin_x,
 					     config->x_deadzone, config->x_scale,
 					     config->x_accel_range, config->x_accel_scale,
@@ -356,8 +391,17 @@ static void padstick_repeat_work_handler(struct k_work *work) {
 			LOG_WRN("repeat REL_X report failed: %d", ret);
 		}
 
+		/*
+		 * Marked before the report, not after: a listener that runs the pair
+		 * synchronously sees it come back inside this call and clears the
+		 * mark again, and one on its own thread waits for this lock first.
+		 * Only the synchronized REL_Y closes a pair, so only its loss
+		 * leaves nothing in flight.
+		 */
+		data->repeat_in_flight = true;
 		ret = input_report_rel(data->input_dev, INPUT_REL_Y, rel_y, true, K_NO_WAIT);
 		if (ret != 0) {
+			data->repeat_in_flight = false;
 			LOG_WRN("repeat REL_Y report failed: %d", ret);
 		}
 
@@ -483,7 +527,7 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_s
 		event->code = INPUT_REL_X;
 		int32_t other = (data->last_y != PADSTICK_COORD_UNSET &&
 				 data->origin_y != PADSTICK_COORD_UNSET)
-					? data->last_y - data->origin_y
+					? padstick_offset(data->last_y, data->origin_y)
 					: 0;
 
 		event->value = padstick_apply_axis('x', event->value, data->origin_x,
@@ -519,7 +563,7 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_s
 		event->code = INPUT_REL_Y;
 		int32_t other = (data->last_x != PADSTICK_COORD_UNSET &&
 				 data->origin_x != PADSTICK_COORD_UNSET)
-					? data->last_x - data->origin_x
+					? padstick_offset(data->last_x, data->origin_x)
 					: 0;
 
 		event->value = padstick_apply_axis('y', event->value, data->origin_y,
@@ -555,33 +599,31 @@ static int padstick_handle_event(const struct device *dev, struct input_event *e
 		data = &owner->streams[state->input_device_index];
 	}
 
+	if (event->type == INPUT_EV_REL) {
+		/* A synchronized step has reached the listener: the repeat pair in
+		 * flight, if any, has been taken off the queue. */
+		if (event->sync) {
+			k_mutex_lock(&data->lock, K_FOREVER);
+			data->repeat_in_flight = false;
+			k_mutex_unlock(&data->lock);
+		}
+		return ZMK_INPUT_PROC_CONTINUE;
+	}
+
 	if (event->type != INPUT_EV_KEY && event->type != INPUT_EV_ABS) {
 		return ZMK_INPUT_PROC_CONTINUE;
 	}
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 
-	if (event->type == INPUT_EV_KEY) {
-		if (event->code == INPUT_BTN_TOUCH) {
-			ret = padstick_handle_touch(event, data, config);
-			goto out;
-		}
-
-		if (event->code == INPUT_BTN_0) {
-			ret = padstick_handle_btn0(event, data, config);
-			goto out;
-		}
-
-		ret = ZMK_INPUT_PROC_CONTINUE;
-		goto out;
-	}
-
 	if (event->type == INPUT_EV_ABS) {
 		ret = padstick_handle_abs_axis(event, data, config);
-		goto out;
+	} else if (event->code == INPUT_BTN_TOUCH) {
+		ret = padstick_handle_touch(event, data, config);
+	} else if (event->code == INPUT_BTN_0) {
+		ret = padstick_handle_btn0(event, data, config);
 	}
 
-out:
 	k_mutex_unlock(&data->lock);
 	return ret;
 }

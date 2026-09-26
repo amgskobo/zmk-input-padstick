@@ -21,13 +21,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  math:
+  runtime:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
-      - name: Exercise actual PadStick arithmetic with full branch coverage
-        run: bash ./tests/run-math-docker.sh
+      - name: Exercise the PadStick driver with full line and branch coverage
+        run: bash ./tests/run-docker.sh
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 45
