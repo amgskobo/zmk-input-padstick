@@ -92,6 +92,7 @@ The defaults are tuned for a 1024 x 1024 absolute trackpad. A 48-count deadzone 
 - Once both the origin and coordinate pair are known, holding that deflection emits another REL pair every 20 ms. The pair is injected through the original input device, so the rest of the configured listener chain still applies.
 - Held-direction repeat runs on ZMK's low-priority work queue, not Zephyr's system work queue, so continuous output cannot delay Bluetooth, split, watchdog, or device-PM system work.
 - `BTN_TOUCH` release cancels pending repeat work before another pair can be scheduled.
+- At most one repeat pair is queued at a time: the next waits until the previous pair has come back through this processor. Zephyr's input queue is small and does not block, and a congested host link can hold the listener for 100 ms per report; a repeat every 20 ms then filled it and the next event was dropped, a touch release included, so the repeat outlived the contact. Normally the pair is taken within the same millisecond and nothing changes.
 
 ### 4. Radial Response
 
@@ -169,16 +170,27 @@ Scale and acceleration scale values are clamped to `0..4096` at runtime. Deadzon
 ## Tests
 
 ```sh
+bash ./tests/run-docker.sh
 bash ./tests/run-integration-docker.sh upstream
 bash ./tests/run-integration-docker.sh dya
 ```
+
+The host suite lifts the driver's own functions into the stubbed harnesses
+in `tests/runtime/` and runs them optimized, under ASan/UBSan, and with gcov:
+the five arithmetic functions, including radial clamping and saturation, and
+the twelve that handle events, the settle and origin frames, the repeat
+worker, paired `BTN_0` suppression and the contact inferred after a layer
+switch. CI requires 100% line and branch coverage of each of those
+functions and of the layer listener's reset of every stream, lifted with its
+macro. The runner fails if any function in the source has no gate.
+Devicetree instantiation itself is left to the integration fixtures below.
 
 Each variant builds a firmware fixture in which two input listeners share one
 padstick node, then runs native_sim self-tests against that ZMK: an
 out-of-range listener index passes through untouched, two listeners keep
 their own contacts, `BTN_0` suppression stays paired per listener, and a layer
 change drops the origin. `upstream` uses ZMK `main`; `dya` uses the DYA ZMK
-fork. GitHub Actions runs both on every pull request and on pushes to `main`.
+fork. GitHub Actions runs both on every pull request, on pushes to `main`, and weekly.
 
 ## License
 
