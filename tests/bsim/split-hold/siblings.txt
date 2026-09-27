@@ -1,0 +1,3 @@
+./ble_test_central.exe -d=2 -subscribe_to_pointer_report
+./@TEST@_peripheral.exe -d=3
+./bs_device_2G4_burst_interf -d=4 -type=WN80 -centerfreq=2441 -power=20 -timestart 6300000 -timeend 9500000

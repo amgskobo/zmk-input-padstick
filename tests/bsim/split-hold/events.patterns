@@ -1,0 +1,4 @@
+/Mouse (movement|scroll) set to 0\/0$/d
+s/^d_00: @[0-9:.]{15}  \[([0-9:.,]+)\] <[a-z]+> zmk: zmk_hid_mouse_movement_set: (.*)/[\1] \2/p
+s/^d_00: @[0-9:.]{15}  \[([0-9:.,]+)\] <[a-z]+> zmk: (split_central_disconnected|split_central_connected): .*/[\1] \2/p
+s/^d_00: @[0-9:.]{15}  \[([0-9:.,]+)\] <[a-z]+> input_processor_padstick: [a-z_]+: (touch=.*|inferred.*)/[\1] \2/p

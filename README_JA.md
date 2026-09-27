@@ -92,6 +92,7 @@ manifest:
 - 原点と座標組の両方が確定した後は、その変位を保持すると 20 ms ごとに次の REL 組を出力します。組は元の input device から注入されるため、listener の残りの processor chain も通常どおり適用されます。
 - 保持方向のrepeatはZephyrのsystem work queueではなくZMKのlow-priority work queueで実行し、連続出力がBluetooth、split、watchdog、device PMのsystem workを遅延させないようにします。
 - `BTN_TOUCH` release は、次の組を予約する前に pending repeat work を停止します。
+- キューに入る repeat の組は一度に1組までです。次の組は、前の組がこの processor を通過して戻るまで待ちます。Zephyr の input queue は小さく待たずに捨てるため、ホスト側の接続が混雑して listener が1レポートに100 ms かかると、20 ms ごとの repeat がキューを埋め、タッチの release を含む次のイベントが捨てられて、接触が終わっても repeat が続いていました。通常は同じミリ秒のうちに組が処理されるため、動作は変わりません。
 
 ### 4. Radial Response
 
@@ -168,15 +169,24 @@ scale と accel scale は runtime で `0..4096` に clamp されます。deadzon
 ## テスト
 
 ```sh
+bash ./tests/run-docker.sh
 bash ./tests/run-integration-docker.sh upstream
 bash ./tests/run-integration-docker.sh dya
 ```
+
+ホストテストはdriver本体の関数を `tests/runtime/` のスタブ付きハーネスに取り出し、
+最適化・ASan/UBSan・gcovで実行します。対象は、放射方向のclampと飽和を含む演算5関数と、
+eventの処理、settle・原点フレーム、repeat worker、対になる `BTN_0` 抑制、
+レイヤ切り替え後に推定する接触を扱う12関数です。CIはそれぞれの関数の行・分岐100%を
+要求します。全streamをresetするlayer listenerもマクロごと取り出し、ソースにゲートのない
+関数が1つでもあればrunnerが失敗します。devicetreeからのインスタンス生成そのものは
+下記の結合テストで確認します。
 
 各variantで、2つのinput listenerが1つのpadstick nodeを共有するファームウェアfixtureをビルドし、
 そのZMKでnative_simのself-testを実行します。範囲外のlistener indexが変更されずに通過すること、
 2つのlistenerが互いの接触状態を上書きしないこと、`BTN_0` の抑制がlistenerごとに対になること、
 レイヤ変更で原点が破棄されることを確認します。`upstream` はZMK `main`、`dya` はDYA ZMK forkを
-使います。GitHub Actions は pull request ごとと `main` への push で両方を実行します。
+使います。GitHub Actions は pull request ごと、`main` への push、週次実行で両方を実行します。
 
 ## License
 

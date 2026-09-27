@@ -1,0 +1,43 @@
+/*
+ * Copyright (c) 2026 amgskobo
+ * SPDX-License-Identifier: MIT
+ *
+ * A fixed-center PadStick on the central, fed by a pad on the peripheral. A
+ * finger resting off the center keeps the pointer moving: PadStick repeats
+ * its last step every 20 ms between the pad's own reports.
+ *
+ * 4.0 s  Resting right of the center: steps right until the lift at 4.52 s,
+ *        and not one after it.
+ * 6.0 s  Resting left of the center, down to 12.0 s. From 6.3 s to 9.5 s
+ *        wideband noise drowns the radio and the split link times out; the
+ *        central releases the contact on the pad's behalf, and the repeats
+ *        must stop then instead of running on with nothing left to end them.
+ *        Once the link is back, two complete frames of the same contact show
+ *        it is still down, and the steps resume until the lift.
+ */
+
+#include <behaviors.dtsi>
+#include <dt-bindings/zmk/keys.h>
+
+#include "shared.dtsi"
+
+&kscan {
+    /delete-property/ exit-after;
+    events = <>;
+};
+
+&split_listener {
+    status = "okay";
+};
+
+/ {
+    keymap {
+        compatible = "zmk,keymap";
+
+        default_layer {
+            bindings = <
+            &kp A &kp B
+            &kp C &kp D>;
+        };
+    };
+};
