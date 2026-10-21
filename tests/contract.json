@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "host": [
+    "bash",
+    "tests/run-docker.sh"
+  ],
+  "contracts": [
+    {
+      "fixture": "tests/runtime/math_harness.c",
+      "asserts": "Coordinate arithmetic and saturation"
+    },
+    {
+      "fixture": "tests/runtime/driver_harness.c",
+      "asserts": "Contact lifecycle, independent streams, bounded repeat pairs and queue pressure; forwarded touch edges retain sync, only paired consumed touch releases stop, repeats and stream ownership stay independent, init/layer resets retire consumed records"
+    }
+  ],
+  "kernel": ["bash", "tests/run-native.sh", "<resolved-west-workspace>"],
+  "kernel_contracts": [
+    {
+      "fixture": "tests/integration/module/src/runtime_test.c",
+      "asserts": "Existing origin/stream/button/layer and three actual input-queue cases retained; touch passthrough sync, unmatched and paired release ownership across two streams and layer resets added; old post-layer touch-release expectation intentionally changed to passthrough/sync with origin assertions retained"
+    }
+  ],
+  "limits": "Native checks include real input-queue repeat pairs with controlled acknowledgements and overdue work cancellation; this is not actual HID/radio congestion acceptance.",
+  "execution": {
+    "default": "quick: every behavioral fixture and scenario under ASan/UBSan once",
+    "full": "ZMK_TEST_MODE=full: same scenarios plus optimized, coverage and existing 32-bit variants",
+    "integration": "owner native/DTS/API guards when interfaces or kernel contracts change; not a prerequisite for pure host behavior",
+    "transport": "actual ordered USB/BLE/split/power/reset evidence; archived simulation is not a passing substitute"
+  },
+  "infrastructure": {
+    "fixtures": [
+      {
+        "fixture": "tests/test_runtime_coverage.py",
+        "asserts": "Actual full runtime entry rejects empty, unrelated and partial measurement; normal full runs retain measured per-function lines/branches"
+      },
+      {
+        "fixture": "tests/integration/test_offline.py",
+        "asserts": "Exact supported core/dependency pins, clean sources, missing inputs, nonoverlapping project paths separate from west/config metadata, fresh outputs outside original source/dependency trees including aliases, parseable wrong-archive rejection; identity/digest bypass controls"
+      },
+      {
+        "fixture": "tests/integration/test_output_guard.py",
+        "asserts": "Existing directories, directory symlinks and dangling symlinks preserve prior evidence and invoke no west command"
+      }
+    ],
+    "entry": "tests/integration/run.sh",
+    "preparation": "Explicit pinned offline workspace; local unchanged ZMK clone and original fixture manifest; no fetch or source repair",
+    "limits": "Admission tests control dependency responses. Actual native/API/firmware fixtures separately verify unchanged stock ZMK and DYA. Physical transport remains separate."
+  }
+}

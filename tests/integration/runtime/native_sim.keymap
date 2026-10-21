@@ -48,6 +48,18 @@
         events = <>;
     };
 
+    padstick_touch_passthrough: padstick_touch_passthrough {
+        compatible = "zmk,input-processor-padstick";
+        #input-processor-cells = <0>;
+    };
+
+    /* Actual input queue endpoint; acknowledgements are explicitly controlled. */
+    repeat_sink: repeat_sink {
+        compatible = "zmk,input-mock";
+        event-period = <100>;
+        events = <>;
+    };
+
     idle_source_b: idle_source_b {
         compatible = "zmk,input-mock";
         event-period = <100>;

@@ -4,9 +4,9 @@
  *
  * Self-tests for the padstick processor, run inside a native_sim build.
  *
- * The events are handed to the processor directly, with no source device, so
- * no held-direction repeat is ever injected and every result below comes from
- * the event that was just sent.
+ * Arithmetic cases use direct events without a source. Repeat boundary cases
+ * use a real input sink and explicitly acknowledge the returned pair, so queue
+ * backpressure and cancellation are tested without claiming HID delivery.
  */
 
 #include <stdlib.h>
@@ -19,8 +19,11 @@
 
 #include <drivers/input_processor.h>
 #include <zmk/keymap.h>
+#include <zmk/workqueue.h>
 
 static const struct device *const padstick = DEVICE_DT_GET(DT_NODELABEL(padstick_runtime_test));
+static const struct device *const repeat_sink = DEVICE_DT_GET(DT_NODELABEL(repeat_sink));
+static const struct device *event_source;
 
 #define STREAM_A 0U
 #define STREAM_B 1U
@@ -28,6 +31,7 @@ static const struct device *const padstick = DEVICE_DT_GET(DT_NODELABEL(padstick
 #define OTHER_LAYER 1
 
 static int process(uint8_t stream, struct input_event *event) {
+    event->dev = event_source;
     struct zmk_input_processor_state state = {
         .input_device_index = stream,
         .remainder = NULL,
@@ -164,9 +168,140 @@ static void test_layer_change_drops_the_origin(void) {
     moving_frame(STREAM_A, 540, 470, 0, -30);
     set_other_layer(false);
 
-    touch(STREAM_A, false);
+    struct input_event release = input(INPUT_EV_KEY, INPUT_BTN_TOUCH, 0, false);
+    __ASSERT_NO_MSG(process(STREAM_A, &release) == ZMK_INPUT_PROC_CONTINUE);
+    __ASSERT_NO_MSG(release.code == INPUT_BTN_TOUCH && release.sync);
 
     printk("PASS: a layer change drops the origin\n");
+}
+
+struct repeat_sample {
+    uint16_t code;
+    int32_t value;
+    bool sync;
+    int64_t ms;
+};
+static struct repeat_sample samples[16];
+static atomic_t sample_count;
+K_SEM_DEFINE(repeat_blocked, 0, 1);
+K_SEM_DEFINE(repeat_resume, 0, 1);
+K_SEM_DEFINE(repeat_drained, 0, 1);
+
+static void capture_repeat(struct input_event *event, void *unused) {
+    ARG_UNUSED(unused);
+    if (event->type != INPUT_EV_REL) {
+        return;
+    }
+    size_t n = atomic_get(&sample_count);
+    __ASSERT_NO_MSG(n < ARRAY_SIZE(samples));
+    samples[n] = (struct repeat_sample){event->code, event->value, event->sync, k_uptime_get()};
+    atomic_inc(&sample_count);
+}
+INPUT_CALLBACK_DEFINE(DEVICE_DT_GET(DT_NODELABEL(repeat_sink)), capture_repeat, NULL);
+
+static void block_repeat(struct k_work *work) {
+    ARG_UNUSED(work);
+    k_sem_give(&repeat_blocked);
+    __ASSERT_NO_MSG(k_sem_take(&repeat_resume, K_SECONDS(1)) == 0);
+}
+static void repeat_fence(struct k_work *work) {
+    ARG_UNUSED(work);
+    k_sem_give(&repeat_drained);
+}
+K_WORK_DEFINE(repeat_blocker, block_repeat);
+K_WORK_DEFINE(repeat_barrier, repeat_fence);
+
+static void begin_repeat(void) {
+    atomic_set(&sample_count, 0);
+    event_source = repeat_sink;
+    touch(STREAM_A, true);
+    consumed_frame(STREAM_A, 500, 500);
+    consumed_frame(STREAM_A, 510, 520);
+    moving_frame(STREAM_A, 530, 520, 20, 0);
+}
+static void check_pair(size_t n) {
+    __ASSERT_NO_MSG(samples[n].code == INPUT_REL_X && samples[n].value == 20 && !samples[n].sync);
+    __ASSERT_NO_MSG(samples[n + 1].code == INPUT_REL_Y && samples[n + 1].value == 0 &&
+                    samples[n + 1].sync);
+    __ASSERT_NO_MSG(samples[n + 1].ms >= samples[n].ms);
+}
+static void print_samples(void) {
+    for (size_t i = 0; i < (size_t)atomic_get(&sample_count); i++) {
+        printk("repeat %lld %u %d %u\n", samples[i].ms, samples[i].code, samples[i].value,
+               samples[i].sync);
+    }
+}
+static void test_real_repeat_backpressure_and_release(void) {
+    int64_t start = k_uptime_get();
+    begin_repeat();
+    k_msleep(65);
+    __ASSERT_NO_MSG(atomic_get(&sample_count) == 2);
+    check_pair(0);
+    __ASSERT_NO_MSG(samples[0].ms >= start + 20);
+    struct input_event x = input(INPUT_EV_REL, INPUT_REL_X, 20, false);
+    __ASSERT_NO_MSG(process(STREAM_A, &x) == ZMK_INPUT_PROC_CONTINUE);
+    k_msleep(40);
+    __ASSERT_NO_MSG(atomic_get(&sample_count) == 2);
+    struct input_event y = input(INPUT_EV_REL, INPUT_REL_Y, 0, true);
+    __ASSERT_NO_MSG(process(STREAM_A, &y) == ZMK_INPUT_PROC_CONTINUE);
+    k_msleep(25);
+    __ASSERT_NO_MSG(atomic_get(&sample_count) == 4);
+    check_pair(2);
+    touch(STREAM_A, false);
+    k_msleep(65);
+    __ASSERT_NO_MSG(atomic_get(&sample_count) == 4);
+    print_samples();
+    event_source = NULL;
+    printk("PASS: one actual input pair stays in flight until sync; release stops later repeats\n");
+}
+static void test_overdue_repeat_cancel(bool layer) {
+    struct k_work_q *q = zmk_workqueue_lowprio_work_q();
+    __ASSERT_NO_MSG(k_work_submit_to_queue(q, &repeat_blocker) >= 0);
+    __ASSERT_NO_MSG(k_sem_take(&repeat_blocked, K_SECONDS(1)) == 0);
+    begin_repeat();
+    k_msleep(30);
+    if (layer) {
+        set_other_layer(true);
+    } else {
+        touch(STREAM_A, false);
+    }
+    k_sem_give(&repeat_resume);
+    __ASSERT_NO_MSG(k_work_submit_to_queue(q, &repeat_barrier) >= 0);
+    __ASSERT_NO_MSG(k_sem_take(&repeat_drained, K_SECONDS(1)) == 0);
+    k_msleep(45);
+    __ASSERT_NO_MSG(atomic_get(&sample_count) == 0);
+    if (layer) {
+        set_other_layer(false);
+    }
+    event_source = NULL;
+    printk("PASS: %s cancels overdue repeat before its input pair escapes\n",
+           layer ? "layer event" : "touch release");
+}
+
+static void test_touch_release_boundaries(void) {
+    const struct device *transparent = DEVICE_DT_GET(DT_NODELABEL(padstick_touch_passthrough));
+    __ASSERT_NO_MSG(device_is_ready(transparent));
+    for (uint8_t stream = STREAM_A; stream <= STREAM_B; stream++) {
+        struct zmk_input_processor_state state = {.input_device_index = stream};
+        for (int value = 1; value >= 0; value--) {
+            struct input_event edge = input(INPUT_EV_KEY, INPUT_BTN_TOUCH, value, false);
+            __ASSERT_NO_MSG(zmk_input_processor_handle_event(transparent, &edge, 0, 0, &state) ==
+                            ZMK_INPUT_PROC_CONTINUE);
+            __ASSERT_NO_MSG(edge.code == INPUT_BTN_TOUCH && edge.sync);
+        }
+    }
+    touch(STREAM_A, true);
+    struct input_event unmatched = input(INPUT_EV_KEY, INPUT_BTN_TOUCH, 0, false);
+    __ASSERT_NO_MSG(process(STREAM_B, &unmatched) == ZMK_INPUT_PROC_CONTINUE);
+    __ASSERT_NO_MSG(unmatched.code == INPUT_BTN_TOUCH && unmatched.sync);
+    touch(STREAM_A, false);
+    touch(STREAM_A, true);
+    set_other_layer(true);
+    struct input_event changed_route = input(INPUT_EV_KEY, INPUT_BTN_TOUCH, 0, false);
+    __ASSERT_NO_MSG(process(STREAM_A, &changed_route) == ZMK_INPUT_PROC_CONTINUE);
+    __ASSERT_NO_MSG(changed_route.code == INPUT_BTN_TOUCH && changed_route.sync);
+    set_other_layer(false);
+    printk("PASS: touch sync and release ownership survive stream and layer boundaries\n");
 }
 
 static void run_tests(void *p1, void *p2, void *p3) {
@@ -179,9 +314,14 @@ static void run_tests(void *p1, void *p2, void *p3) {
     __ASSERT_NO_MSG(DT_NUM_INST_STATUS_OKAY(zmk_input_listener) >= 2);
 
     test_invalid_stream_passes_through();
+    test_touch_release_boundaries();
     test_streams_are_independent();
     test_button_suppression_stays_paired();
     test_layer_change_drops_the_origin();
+    __ASSERT_NO_MSG(device_is_ready(repeat_sink));
+    test_real_repeat_backpressure_and_release();
+    test_overdue_repeat_cancel(false);
+    test_overdue_repeat_cancel(true);
 
     printk("padstick runtime tests: PASS\n");
     exit(0);

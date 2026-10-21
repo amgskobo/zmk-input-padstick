@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "owner": "zmk-input-padstick",
+  "supported_cores": [
+    "stock-zmk",
+    "dya"
+  ],
+  "unsupported_core_status": "NOT APPLICABLE",
+  "commands": [
+    "bash tests/run-docker.sh",
+    "bash tests/run.sh (inside the Linux build image); same behavioral and coverage/offline-admission entry used by Docker and CI",
+    "python3 -m unittest discover -s tests/integration -p test_*.py -v (inside the Linux build image)",
+    "Explicit offline integration: tests/integration/run.sh; see tests/README.md for pinned workspaces, variant selection and fresh outputs"
+  ],
+  "coverage_map": "tests/contract.json",
+  "preserved_assertions": "Relocated fixtures retain their prior assertions; no snapshot auto-accept or unique assertion removal.",
+  "execution": {
+    "quick": "All behavioral scenarios once; sanitizer variants where supported.",
+    "full": "Same scenarios plus relevant optimization, ABI, role, kernel and supported-core checks.",
+    "outputs": "Use a fresh evidence directory; existing evidence is never overwritten."
+  },
+  "gaps": [
+    "Physical USB/BLE/split delivery, timing, power and retention require matching production-board evidence."
+  ]
+}

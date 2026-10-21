@@ -6,6 +6,10 @@
 
 絶対座標を報告するトラックパッドを、小さなジョイスティックのようなポインティング面として使うための ZMK input processor です。
 
+タッチの抑止は、listener ごとに押下と対応する解除を消費します。押下を消費して
+いない解除は、レイヤー変更後も通過します。通過するタッチの各 edge は単独の同期
+境界を持つため、最後の座標が初期化用に消費されても解除が次の報告待ちになりません。
+
 `zmk,input-processor-padstick` は、`INPUT_BTN_TOUCH` 後に最初に届いた完全な絶対座標レポートフレームを捨て、その後の絶対座標レポートを `INPUT_REL_X` / `INPUT_REL_Y` に変換します。デフォルトでは、その次に届いた `INPUT_ABS_X` と `INPUT_ABS_Y` を一時的なタッチ原点として保存します。`fixed-center` を有効にした場合は、設定した `x-center` / `y-center` 座標を原点として使います。接触中は padstick 自身が最新の変位を 20 ms ごとに再計算するため、入力元ドライバーに同一 ABS 座標を再送させずに、方向を保持したジョイスティック操作になります。
 
 ## Features
@@ -191,3 +195,14 @@ eventの処理、settle・原点フレーム、repeat worker、対になる `BTN
 ## License
 
 MIT License. 詳細は [LICENSE](LICENSE) を参照してください。
+
+
+nativeテストは実input queueへ送る繰返しペア、制御された確認応答、接触終了・待機中レイヤー変更も検証し、同じバイナリを3回実行します。
+実HID・無線の混雑試験とは分けています。詳細は [テストガイド](tests/README.md) を参照してください。
+
+## Current test entry points (2026-10-05)
+
+See [the module-owned test guide](tests/README.md). The default host command
+executes every behavior scenario once under ASan/UBSan. Set `ZMK_TEST_MODE=full`
+for all retained coverage/ABI variants. Legacy simulation has been removed
+from the active suite; its source/snapshots remain externally archived.

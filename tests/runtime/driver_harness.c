@@ -3,6 +3,8 @@
  */
 
 #include <assert.h>
+#include <stdlib.h>
+#include <string.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -74,6 +76,7 @@ struct padstick_stream {
     bool skip_origin_frame;
     int32_t last_x, last_y;
     bool btn0_press_suppressed;
+    bool btn_touch_press_suppressed;
     bool repeat_in_flight;
 };
 struct padstick_data {
@@ -198,6 +201,7 @@ static void test_init_and_routing(void) {
     for (size_t i = 0; i < PADSTICK_STREAM_COUNT; i++) {
         owner.streams[i].touch_active = true;
         owner.streams[i].btn0_press_suppressed = true;
+        owner.streams[i].btn_touch_press_suppressed = true;
         owner.streams[i].lock.depth = 3;
         owner.streams[i].input_dev = &pad;
         owner.streams[i].x_remainder = owner.streams[i].y_remainder = 7;
@@ -206,6 +210,7 @@ static void test_init_and_routing(void) {
     assert(padstick_init(&processor) == 0);
     for (size_t i = 0; i < PADSTICK_STREAM_COUNT; i++) {
         assert(!stream(i)->touch_active && !stream(i)->btn0_press_suppressed);
+        assert(!stream(i)->btn_touch_press_suppressed);
         assert(stream(i)->lock.depth == 0 && stream(i)->input_dev == NULL);
         assert(stream(i)->x_remainder == 0 && stream(i)->y_remainder == 0);
         assert(stream(i)->unsignaled_contact_frames == 0);
@@ -455,6 +460,46 @@ static void test_fixed_center_config(struct padstick_config *config) {
     assert(touch(NULL, false) == ZMK_INPUT_PROC_STOP);
 }
 
+static void test_touch_sync(struct padstick_config *config) {
+    config->suppress_btn_touch = false;
+    assert(padstick_init(&processor) == 0);
+    for (size_t index = 0; index < PADSTICK_STREAM_COUNT; index++) {
+        struct zmk_input_processor_state state = {.input_device_index = index};
+        for (int value = 1; value >= 0; value--) {
+            struct input_event event = {.dev = &pad, .type = INPUT_EV_KEY,
+                                        .code = INPUT_BTN_TOUCH, .value = value, .sync = false};
+            assert(padstick_handle_event(&processor, &event, 0, 0, &state) == ZMK_INPUT_PROC_CONTINUE);
+            assert(event.code == INPUT_BTN_TOUCH && event.sync && "forwarded touch needs its own sync");
+        }
+    }
+    puts("padstick forwarded touch sync: PASS");
+}
+
+static void test_unmatched_touch_release(struct padstick_config *config) {
+    config->suppress_btn_touch = true;
+    assert(padstick_init(&processor) == 0);
+    for (size_t index = 0; index < PADSTICK_STREAM_COUNT; index++) {
+        struct zmk_input_processor_state state = {.input_device_index = index};
+        struct input_event release = {.dev = &pad, .type = INPUT_EV_KEY,
+                                      .code = INPUT_BTN_TOUCH, .value = 0, .sync = false};
+        assert(padstick_handle_event(&processor, &release, 0, 0, &state) == ZMK_INPUT_PROC_CONTINUE &&
+               "touch release whose press was not consumed must pass");
+        assert(release.code == INPUT_BTN_TOUCH && release.sync);
+        assert(touch(&state, true) == ZMK_INPUT_PROC_STOP);
+        assert(touch(&state, true) == ZMK_INPUT_PROC_STOP);
+        assert(touch(&state, false) == ZMK_INPUT_PROC_STOP);
+        assert(touch(&state, false) == ZMK_INPUT_PROC_CONTINUE);
+    }
+    struct zmk_input_processor_state first = {.input_device_index = 0};
+    struct zmk_input_processor_state second = {.input_device_index = 1};
+    assert(touch(&first, true) == ZMK_INPUT_PROC_STOP);
+    assert(touch(&second, false) == ZMK_INPUT_PROC_CONTINUE);
+    assert(touch(&first, false) == ZMK_INPUT_PROC_STOP);
+    config->suppress_btn_touch = false;
+    assert(padstick_init(&processor) == 0);
+    puts("padstick touch release ownership: PASS");
+}
+
 int main(void) {
     struct padstick_config config = {
         .x_deadzone = 48, .y_deadzone = 48, .x_scale = 8, .y_scale = 8,
@@ -462,7 +507,22 @@ int main(void) {
         .max_x = 16, .max_y = 16, .x_center = 512, .y_center = 512, .suppress_btn0 = true};
     processor = (struct device){.config = &config, .data = &owner, .name = "padstick"};
 
+    const char *selected = getenv("PADSTICK_TEST_CASE");
+    if (selected != NULL) {
+        if (strcmp(selected, "touch-sync") == 0) {
+            test_touch_sync(&config);
+            return 0;
+        }
+        if (strcmp(selected, "touch-unmatched") == 0) {
+            test_unmatched_touch_release(&config);
+            return 0;
+        }
+        assert(!"unknown PadStick test case");
+    }
+
     test_init_and_routing();
+    test_touch_sync(&config);
+    test_unmatched_touch_release(&config);
     test_contact_steps();
     test_partial_frames();
     test_inferred_contact();
@@ -475,6 +535,7 @@ int main(void) {
         stream(i)->input_dev = &pad;
         stream(i)->origin_x = stream(i)->origin_y = 100;
         stream(i)->btn0_press_suppressed = true;
+        stream(i)->btn_touch_press_suppressed = true;
         stream(i)->repeat_work.scheduled = true;
     }
     const zmk_event_t layer_changed = {1};
@@ -483,6 +544,7 @@ int main(void) {
         assert(!stream(i)->touch_active && stream(i)->input_dev == NULL);
         assert(stream(i)->origin_x == PADSTICK_COORD_UNSET && stream(i)->skip_origin_frame);
         assert(!stream(i)->btn0_press_suppressed && !stream(i)->repeat_work.scheduled);
+        assert(!stream(i)->btn_touch_press_suppressed);
     }
 
     for (size_t i = 0; i < PADSTICK_STREAM_COUNT; i++) {

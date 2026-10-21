@@ -20,6 +20,9 @@ concurrency:
   group: test-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
+env:
+  ZMK_TEST_MODE: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'full' || 'quick' }}
+
 jobs:
   runtime:
     runs-on: ubuntu-latest

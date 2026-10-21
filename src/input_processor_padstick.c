@@ -16,7 +16,10 @@
 #include <zmk/events/layer_state_changed.h>
 #include <zmk/workqueue.h>
 
-LOG_MODULE_REGISTER(input_processor_padstick, CONFIG_ZMK_LOG_LEVEL);
+#ifndef CONFIG_ZMK_INPUT_PADSTICK_LOG_LEVEL
+#define CONFIG_ZMK_INPUT_PADSTICK_LOG_LEVEL 3
+#endif
+LOG_MODULE_REGISTER(zmk_input_padstick_input_processor_padstick, CONFIG_ZMK_INPUT_PADSTICK_LOG_LEVEL);
 
 #define PADSTICK_COORD_UNSET INT32_MIN
 #define PADSTICK_DISTANCE_MAX 32767
@@ -100,6 +103,7 @@ struct padstick_stream {
 	 * button held down on the host with nothing left to release it.
 	 */
 	bool btn0_press_suppressed;
+	bool btn_touch_press_suppressed;
 	/*
 	 * Set when a repeat pair has been queued and not yet seen back here. The
 	 * input queue is small and does not block: while the listener is held up -
@@ -254,17 +258,13 @@ static int32_t padstick_apply_axis(char axis, int32_t value, int32_t origin, int
 	int32_t magnitude = (int32_t)MIN(padstick_isqrt(a * a + b * b),
 					 (uint32_t)PADSTICK_DISTANCE_MAX);
 	int32_t reach = magnitude;
-	int32_t remainder_in = *remainder;
-
-	ARG_UNUSED(remainder_in);
+	ARG_UNUSED(axis);
 
 	deadzone = MAX(deadzone, 0);
 	max_value = MAX(max_value, 0);
 
 	if (magnitude <= deadzone) {
 		*remainder = 0;
-		LOG_DBG("%c abs=%d origin=%d delta=%d mag=%d deadzone=%d -> rel=0 rem=0",
-			axis, value, origin, delta, magnitude, deadzone);
 		return 0;
 	}
 
@@ -285,28 +285,15 @@ static int32_t padstick_apply_axis(char axis, int32_t value, int32_t origin, int
 
 	if (output > max_value) {
 		*remainder = 0;
-		LOG_DBG("%c abs=%d origin=%d delta=%d mag=%d scaled=%d rem_in=%d total=%d -> "
-			"rel=%d saturated rem=0",
-			axis, value, origin, delta, magnitude, scaled, remainder_in, total,
-			max_value);
 		return max_value;
 	}
 
 	if (output < -max_value) {
 		*remainder = 0;
-		LOG_DBG("%c abs=%d origin=%d delta=%d mag=%d scaled=%d rem_in=%d total=%d -> "
-			"rel=%d saturated rem=0",
-			axis, value, origin, delta, magnitude, scaled, remainder_in, total,
-			-max_value);
 		return -max_value;
 	}
 
 	*remainder = total - (output * PADSTICK_SCALE_ONE);
-	LOG_DBG("%c abs=%d origin=%d delta=%d mag=%d scaled=%d rem_in=%d total=%d -> "
-		"rel=%d rem=%d",
-		axis, value, origin, delta, magnitude, scaled, remainder_in, total, output,
-		*remainder);
-
 	return output;
 }
 
@@ -420,8 +407,6 @@ static int padstick_suppress_event(struct input_event *event) {
 	ARG_UNUSED(code);
 	ARG_UNUSED(value);
 
-	LOG_DBG("suppress type=%u code=%u value=%d", type, code, value);
-
 	event->code = PADSTICK_INVALID_CODE;
 	event->sync = false;
 	return ZMK_INPUT_PROC_STOP;
@@ -446,12 +431,16 @@ static int padstick_handle_touch(struct input_event *event, struct padstick_stre
 	padstick_reset_contact(data);
 	data->touch_active = event->value != 0;
 	data->input_dev = data->touch_active ? event->dev : NULL;
-	LOG_DBG("touch=%d reset origin/rem", event->value != 0);
-
-	if (config->suppress_btn_touch) {
+	const bool was_suppressed = data->btn_touch_press_suppressed;
+	data->btn_touch_press_suppressed = config->suppress_btn_touch && event->value != 0;
+	if (config->suppress_btn_touch && (event->value != 0 || was_suppressed)) {
 		return padstick_suppress_event(event);
 	}
 
+	/* The final coordinates may all be consumed as the settle frame. A
+	 * forwarded touch edge must flush itself, including a release whose down
+	 * was routed elsewhere. */
+	event->sync = true;
 	return ZMK_INPUT_PROC_CONTINUE;
 }
 
@@ -474,7 +463,6 @@ static int padstick_handle_btn0(struct input_event *event, struct padstick_strea
 
 	if (!event->value && !was_suppressed) {
 		/* The expected case after a layer change, not a fault: debug only. */
-		LOG_DBG("Passing BTN_0 release: its press was not suppressed here");
 		return ZMK_INPUT_PROC_CONTINUE;
 	}
 
@@ -505,7 +493,6 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_s
 	 */
 	if (event->code == INPUT_ABS_X) {
 		if (data->skip_origin_frame) {
-			LOG_DBG("x skip origin-settle abs=%d sync=%d", event->value, event->sync);
 			if (event->sync) {
 				data->skip_origin_frame = false;
 			}
@@ -515,10 +502,8 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_s
 		if (data->origin_x == PADSTICK_COORD_UNSET) {
 			if (config->fixed_center) {
 				padstick_seed_fixed_origin(data, config);
-				LOG_DBG("x fixed origin=%d", data->origin_x);
 			} else {
 				data->origin_x = event->value;
-				LOG_DBG("x origin=%d", data->origin_x);
 				return padstick_suppress_event(event);
 			}
 		}
@@ -541,7 +526,6 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_s
 
 	if (event->code == INPUT_ABS_Y) {
 		if (data->skip_origin_frame) {
-			LOG_DBG("y skip origin-settle abs=%d sync=%d", event->value, event->sync);
 			if (event->sync) {
 				data->skip_origin_frame = false;
 			}
@@ -551,10 +535,8 @@ static int padstick_handle_abs_axis(struct input_event *event, struct padstick_s
 		if (data->origin_y == PADSTICK_COORD_UNSET) {
 			if (config->fixed_center) {
 				padstick_seed_fixed_origin(data, config);
-				LOG_DBG("y fixed origin=%d", data->origin_y);
 			} else {
 				data->origin_y = event->value;
-				LOG_DBG("y origin=%d", data->origin_y);
 				return padstick_suppress_event(event);
 			}
 		}
@@ -642,6 +624,7 @@ static int padstick_init(const struct device *dev) {
 		stream->input_dev = NULL;
 		stream->touch_active = false;
 		stream->btn0_press_suppressed = false;
+		stream->btn_touch_press_suppressed = false;
 		padstick_reset_contact(stream);
 	}
 	LOG_DBG("init x: dz=%d scale=%d accel_range=%d accel_scale=%d max=%d invert=%d",
@@ -716,6 +699,7 @@ DT_INST_FOREACH_STATUS_OKAY(PADSTICK_INST)
 			data->input_dev = NULL;                                       \
 			padstick_reset_contact(data);                                 \
 			data->btn0_press_suppressed = false;                          \
+			data->btn_touch_press_suppressed = false;                     \
 			k_mutex_unlock(&data->lock);                                  \
 		}                                                                    \
 	}

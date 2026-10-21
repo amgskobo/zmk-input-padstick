@@ -6,6 +6,11 @@
 
 A ZMK input processor for using an absolute-reporting trackpad as a small joystick-style pointing surface.
 
+Touch suppression consumes the press and its paired release on each listener.
+A release whose press was not consumed passes through, including after a layer
+change. Forwarded touch edges have their own synchronization boundary so the
+final settling coordinates cannot leave a release waiting for another report.
+
 `zmk,input-processor-padstick` ignores the first complete absolute report frame after `INPUT_BTN_TOUCH`, then converts later absolute reports to `INPUT_REL_X` and `INPUT_REL_Y`. By default the next `INPUT_ABS_X` and `INPUT_ABS_Y` values become the temporary touch origin. When `fixed-center` is enabled, the configured `x-center` / `y-center` coordinates are used instead. While that contact remains active, padstick repeats the latest deflection every 20 ms, so holding a direction behaves as a joystick without requiring the source driver to resend identical ABS coordinates.
 
 ## Features
@@ -195,3 +200,16 @@ fork. GitHub Actions runs both on every pull request, on pushes to `main`, and w
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
+
+
+The native fixture also exercises real input-queue repeat pairs with explicitly
+controlled acknowledgements, touch cancellation and queued layer cancellation.
+Each binary runs three times. This does not replace actual HID/radio congestion checks;
+see [the test guide](tests/README.md).
+
+## Current test entry points (2026-10-05)
+
+See [the module-owned test guide](tests/README.md). The default host command
+executes every behavior scenario once under ASan/UBSan. Set `ZMK_TEST_MODE=full`
+for all retained coverage/ABI variants. Legacy simulation has been removed
+from the active suite; its source/snapshots remain externally archived.
