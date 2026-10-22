@@ -18,6 +18,12 @@ esac
 
 tests_dir=/src/tests/integration
 
+if [ -n "${ZMK_TEST_OFFLINE_WORKSPACE:-}" ]; then
+    work_dir="${ZMK_TEST_OUTPUT:?set ZMK_TEST_OUTPUT to a fresh evidence directory}"
+    workspace="$(python3 /src/tests/integration/offline.py "$ZMK_TEST_OFFLINE_WORKSPACE" "$variant" "/src/tests/integration/config/$variant/west.yml" "$work_dir")"
+    cd "$workspace"
+    west zephyr-export
+else
 if [ -n "${ZMK_TEST_WORKSPACE:-}" ]; then
     work_dir="$ZMK_TEST_WORKSPACE/$variant"
     mkdir -p "$work_dir"
@@ -39,16 +45,28 @@ fi
 west update --narrow --fetch-opt=--depth=1
 west zephyr-export
 
-export ZEPHYR_BASE="$work_dir/zephyr"
+workspace="$work_dir"
+fi
+
+export ZEPHYR_BASE="$workspace/zephyr"
+source "/src/tests/integration/workspace-env.sh"
+zmk_test_select_workspace "$workspace"
+
 
 mkdir -p "$work_dir/build"
+
+cmake_args=()
+if [ "$variant" = dya ]; then
+    cmake_args+=("-DEXTRA_CONF_FILE=$tests_dir/custom-settings.conf")
+    export ZMK_TEST_CUSTOM_SETTINGS=1
+fi
 
 firmware_dir="$work_dir/build/firmware"
 rm -rf "$firmware_dir"
 
-if ! west build -s "$work_dir/zmk/app" -d "$firmware_dir" -b xiao_ble/nrf52840/zmk -- \
+if ! west build -s "$workspace/zmk/app" -d "$firmware_dir" -b xiao_ble/nrf52840/zmk -- \
     -DZMK_EXTRA_MODULES="/src;$tests_dir/firmware" \
-    -DSHIELD=padstick_test >"$firmware_dir.log" 2>&1; then
+    -DSHIELD=padstick_test "${cmake_args[@]}" >"$firmware_dir.log" 2>&1; then
     echo "FAILED: $variant firmware fixture did not build"
     tail -n 80 "$firmware_dir.log"
     exit 1
@@ -61,31 +79,17 @@ if grep -n 'input_processor_padstick.c:[0-9]*:[0-9]*: warning' "$firmware_dir.lo
     echo "FAILED: $variant firmware fixture warned in the processor"
     exit 1
 fi
+if [ "$variant" = dya ]; then
+    grep -q '^CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS=y' "$firmware_dir/zephyr/.config"
+    strings "$firmware_dir/zephyr/zmk.elf" >"$firmware_dir/zephyr/strings.txt"
+    grep -Fxq 'amgskobo__padstick' "$firmware_dir/zephyr/strings.txt"
+else
+    ! grep -q '^CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS=y' "$firmware_dir/zephyr/.config"
+fi
 echo "PASS: $variant firmware fixture"
 
-runtime_dir="$work_dir/build/runtime"
-rm -rf "$runtime_dir"
+ZMK_TEST_OUTPUT="$work_dir/guards" bash /src/tests/integration/guards/run.sh "$workspace"
 
-if ! west build -s "$work_dir/zmk/app" -d "$runtime_dir" -b native_sim//zmk_test_mock -- \
-    -DCONFIG_ASSERT=y -DZMK_CONFIG="$tests_dir/runtime" \
-    -DZMK_EXTRA_MODULES="/src;$tests_dir/module" >"$runtime_dir.log" 2>&1; then
-    echo "FAILED: $variant runtime build"
-    tail -n 80 "$runtime_dir.log"
-    exit 1
-fi
-
-runtime_log="$work_dir/build/runtime.run.log"
-if ! timeout 30 "$runtime_dir/zephyr/zmk.exe" >"$runtime_log" 2>&1; then
-    echo "FAILED: $variant runtime execution"
-    tail -n 80 "$runtime_log"
-    exit 1
-fi
-if ! grep -Fq "padstick runtime tests: PASS" "$runtime_log"; then
-    echo "FAILED: $variant runtime tests did not report success"
-    tail -n 80 "$runtime_log"
-    exit 1
-fi
-grep -F 'PASS: ' "$runtime_log" | sed -e 's/.*PASS: /PASS: /'
-echo "PASS: $variant runtime execution"
+ZMK_TEST_OUTPUT="$work_dir/native" bash /src/tests/run-native.sh "$workspace"
 
 echo "padstick $variant integration: PASS"

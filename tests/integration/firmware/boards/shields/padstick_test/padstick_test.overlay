@@ -73,6 +73,6 @@
 
 &padstick {
     fixed-center;
-    suppress-btn-touch;
-    suppress-btn0;
+
+
 };

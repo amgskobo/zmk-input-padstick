@@ -9,3 +9,12 @@ config ZMK_INPUT_PROCESSOR_PADSTICK
 	depends on ZMK_POINTING
 	depends on (!ZMK_SPLIT || ZMK_SPLIT_ROLE_CENTRAL)
 	select ZMK_LOW_PRIORITY_WORK_QUEUE
+
+config ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS
+    bool "Publish PadStick tuning through custom settings"
+    depends on ZMK_INPUT_PROCESSOR_PADSTICK
+    depends on ZMK_CUSTOM_SETTINGS_STUDIO_RPC
+    help
+      DYA Studio exposes each node's deadzones, gains, centers and orientation.
+      The shared registry owns persistence. Stock ZMK keeps the runtime API
+      without registering a Custom Studio subsystem.
