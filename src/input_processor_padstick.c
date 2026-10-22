@@ -365,6 +365,13 @@ static int padstick_init(const struct device *dev) {
 	struct padstick_data *data = dev->data;
 	const struct padstick_params *config = dev->config;
 
+	/* The origin/last-coordinate state reserves this value as unset. The live
+	 * setter already rejects it; boot configuration must obey the same rule. */
+	if (config->x_center == PADSTICK_COORD_UNSET ||
+	    config->y_center == PADSTICK_COORD_UNSET) {
+		return -EINVAL;
+	}
+
 	data->processor = dev;
 	k_mutex_init(&data->lock);
 	data->params = *config;
@@ -440,6 +447,10 @@ int padstick_set_params(const struct device *dev, const struct padstick_params *
 }
 
 #define PADSTICK_INST(n)                                                                         \
+	BUILD_ASSERT((int32_t)DT_INST_PROP_OR(n, x_center, 512) != PADSTICK_COORD_UNSET,            \
+		     "padstick x-center must not be the unset coordinate");                            \
+	BUILD_ASSERT((int32_t)DT_INST_PROP_OR(n, y_center, 512) != PADSTICK_COORD_UNSET,            \
+		     "padstick y-center must not be the unset coordinate");                            \
 	static struct padstick_data padstick_data_##n;                                           \
 	static const struct padstick_params padstick_config_##n = {                              \
 		.x_deadzone = DT_INST_PROP_OR(n, x_deadzone, 48),                                \

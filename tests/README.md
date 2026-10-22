@@ -58,6 +58,20 @@ and maintenance.json for current commands and ownership.
 
 ## Runtime settings
 
+Boot configuration rejects INT32_MIN on either center axis before initializing
+the device, matching the live API's reserved-coordinate rule. The complete-driver
+host fixture tests X and Y independently: before repair a stationary (512,512)
+input produced (16,0) or (0,16). Each regression requires -EINVAL; INT32_MIN+1
+and INT32_MAX remain accepted. Focus either regression with
+`PADSTICK_TEST_CASE=boot-center-x` or `boot-center-y` in a quick runtime run.
+Existing DTS scale/deadzone clamping and valid defaults remain unchanged.
+
+The real-DTS entry `ZMK_TEST_OUTPUT=/fresh/guards bash
+tests/integration/guards/run.sh /resolved/workspace` requires named compile
+rejections for X/Y sentinel centers and successful compilation with the adjacent
+signed limits. Both integration variants dispatch it before the retained native
+suite. Existing, linked and dangling result paths fail before west is called.
+
 The complete adapter fixture covers 30 keys across two nodes, defaults/ranges,
 initialization/change events, read/type failures, rejected snapshots and duplicate
 keys. API cases cover every integer bound, atomic rejection, no-op writes,

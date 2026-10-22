@@ -169,6 +169,11 @@ Debug logs describe initialization and inferred continuing contacts. Failed repe
 
 Scale and acceleration scale values are clamped to `0..4096` at runtime. Deadzone and max values are clamped to non-negative values.
 
+`INT32_MIN` is reserved internally for an unset coordinate and cannot be used
+as either center. DTS instances reject it at build time, and initialization
+also rejects it, matching the live API. All values from `INT32_MIN+1` through
+`INT32_MAX` are valid.
+
 ## Tests
 
 ```sh
@@ -194,11 +199,6 @@ congestion and board timing require separate evidence.
 
 MIT License. See [LICENSE](LICENSE) for details.
 
-
-The native fixture also exercises real input-queue repeat pairs with explicitly
-controlled acknowledgements, touch cancellation and queued layer cancellation.
-Each binary runs three times. This does not replace actual HID/radio congestion checks;
-see [the test guide](tests/README.md).
 
 ## DYA Studio settings
 

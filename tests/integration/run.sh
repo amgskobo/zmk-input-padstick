@@ -88,6 +88,8 @@ else
 fi
 echo "PASS: $variant firmware fixture"
 
+ZMK_TEST_OUTPUT="$work_dir/guards" bash /src/tests/integration/guards/run.sh "$workspace"
+
 ZMK_TEST_OUTPUT="$work_dir/native" bash /src/tests/run-native.sh "$workspace"
 
 echo "padstick $variant integration: PASS"

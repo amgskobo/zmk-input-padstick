@@ -11,7 +11,11 @@
     },
     {
       "fixture": "tests/runtime/driver_harness.c",
-      "asserts": "Complete actual driver with Zephyr stand-ins and actual state layouts: independent origins/remainders/contact/repeat pairs, backpressure/cancellation and unchanged source button edges/sync across layer changes"
+      "asserts": "Complete actual driver with Zephyr stand-ins and actual state layouts: independent origins/remainders/contact/repeat pairs, backpressure/cancellation, unchanged source button edges/sync, and X/Y boot-center sentinel rejection with valid signed neighbors"
+    },
+    {
+      "fixture": "tests/integration/guards/run.sh",
+      "asserts": "Actual DTS X/Y unset-center configurations fail for their named compile assertion; adjacent signed center limits compile on both supported cores"
     }
   ],
   "kernel": [

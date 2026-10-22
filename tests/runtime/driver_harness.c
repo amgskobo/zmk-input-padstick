@@ -51,6 +51,7 @@ struct zmk_input_processor_state { uint8_t input_device_index; };
 #define ZMK_EV_EVENT_BUBBLE 0
 #define DT_INST_FOREACH_STATUS_OKAY(fn) fn(0)
 #define DT_INST_PROP_OR(n,key,fallback) fallback
+#define BUILD_ASSERT(condition,message) _Static_assert(condition,message)
 #define DEVICE_DT_INST_GET(n) (&processor)
 #define DEVICE_DT_INST_DEFINE(n,init,pm,storage,settings,level,priority,driver) \
     static struct device processor={.data=storage,.config=settings,.api=driver};
@@ -413,7 +414,7 @@ static void test_inferred_contact(void) {
 }
 
 static void test_buttons(void) {
-    /* Suppression is paired: only the release of a dropped press is dropped. */
+    /* Every original button edge passes, including an unmatched release. */
     assert(send(NULL, INPUT_EV_KEY, INPUT_BTN_0, 1, false) == ZMK_INPUT_PROC_CONTINUE);
     assert(send(NULL, INPUT_EV_KEY, INPUT_BTN_0, 0, false) == ZMK_INPUT_PROC_CONTINUE);
     assert(send(NULL, INPUT_EV_KEY, INPUT_BTN_0, 0, false) == ZMK_INPUT_PROC_CONTINUE);
@@ -448,9 +449,9 @@ static void test_fixed_center_config(struct padstick_params *config) {
     run_repeat(0); /* last_y unset */
     assert(reports == 2);
 
-    /* BTN_0 left alone, and a stale suppression forgotten. */
+    /* Source buttons remain unchanged. */
     assert(send(NULL, INPUT_EV_KEY, INPUT_BTN_0, 0, false) == ZMK_INPUT_PROC_CONTINUE);
-    /* Other absolute axes suppressed. */
+    /* Other absolute axes pass through unchanged. */
     assert(send(NULL, INPUT_EV_ABS, INPUT_ABS_PRESSURE, 40, false) == ZMK_INPUT_PROC_CONTINUE);
     assert(touch(NULL, false) == ZMK_INPUT_PROC_CONTINUE);
 }
@@ -641,6 +642,37 @@ static void test_partial_repeat_admission(void) {
     puts("padstick partial FIFO admission, reset cancellation and recovery: PASS");
 }
 
+static void test_boot_center(struct padstick_params *config, bool x) {
+    struct padstick_params invalid = *config;
+    invalid.fixed_center = true;
+    if (x) { invalid.x_center = INT32_MIN; }
+    else { invalid.y_center = INT32_MIN; }
+    processor.config = &invalid;
+    const int rc = padstick_init(&processor);
+    if (rc == 0) {
+        touch(NULL, true);
+        axis(NULL, INPUT_ABS_X, 512, false);
+        axis(NULL, INPUT_ABS_Y, 512, true);
+        const int32_t dx = axis(NULL, INPUT_ABS_X, 512, false);
+        const int32_t dy = axis(NULL, INPUT_ABS_Y, 512, true);
+        fprintf(stderr, "reserved boot %c center accepted: stationary input produced (%d,%d)\n",
+                x ? 'X' : 'Y', dx, dy);
+    }
+    assert(rc == -EINVAL && "boot center must reject the unset coordinate sentinel");
+    /* Neighboring negative and positive limits are real coordinates. */
+    for (unsigned boundary = 0; boundary < 2; boundary++) {
+        struct padstick_params valid = *config;
+        const int32_t value = boundary == 0 ? INT32_MIN + 1 : INT32_MAX;
+        if (x) { valid.x_center = value; } else { valid.y_center = value; }
+        processor.config = &valid;
+        assert(padstick_init(&processor) == 0);
+        assert((x ? owner.params.x_center : owner.params.y_center) == value);
+    }
+    processor.config = config;
+    assert(padstick_init(&processor) == 0);
+    puts(x ? "padstick boot X center boundaries: PASS" : "padstick boot Y center boundaries: PASS");
+}
+
 int main(void) {
     struct padstick_params config = {
         .x_deadzone = 48, .y_deadzone = 48, .x_scale = 8, .y_scale = 8,
@@ -650,6 +682,10 @@ int main(void) {
 
     const char *selected = getenv("PADSTICK_TEST_CASE");
     if (selected != NULL) {
+        if (strcmp(selected, "boot-center-x") == 0 || strcmp(selected, "boot-center-y") == 0) {
+            test_boot_center(&config, strcmp(selected, "boot-center-x") == 0);
+            return 0;
+        }
         if (strcmp(selected, "touch-sync") == 0) {
             test_touch_sync(&config);
             return 0;
@@ -662,6 +698,8 @@ int main(void) {
     }
 
     test_init_and_routing();
+    test_boot_center(&config, true);
+    test_boot_center(&config, false);
     test_touch_sync(&config);
     test_unmatched_touch_release(&config);
     test_runtime_params();
@@ -673,7 +711,7 @@ int main(void) {
     test_buttons();
     test_fixed_center_config(&config);
 
-    /* A layer change drops every stream's contact, origin and pairing. */
+    /* A layer change drops every stream's contact and origin. */
     for (size_t i = 0; i < PADSTICK_STREAM_COUNT; i++) {
         stream(i)->touch_active = true;
         stream(i)->input_dev = &pad;

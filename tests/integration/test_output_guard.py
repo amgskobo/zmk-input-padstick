@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import unittest
 
-ENTRIES = ['tests/run-native.sh']
+ENTRIES = ['tests/run-native.sh', 'tests/integration/guards/run.sh']
 
 class FreshOutput(unittest.TestCase):
     def test_existing_output_rejected_before_west_or_any_write(self):
