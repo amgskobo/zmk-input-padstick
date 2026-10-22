@@ -13,7 +13,7 @@
     "Explicit offline integration: tests/integration/run.sh; see tests/README.md for pinned workspaces, variant selection and fresh outputs"
   ],
   "coverage_map": "tests/contract.json",
-  "preserved_assertions": "Relocated fixtures retain their prior assertions; no snapshot auto-accept or unique assertion removal.",
+  "preserved_assertions": "All math/motion/native assertions retained; equivalent node-lock checks replace stream-lock checks. DYA now owns pinned archive admission and actual registry/NVS reload fixtures.",
   "execution": {
     "quick": "All behavioral scenarios once; sanitizer variants where supported.",
     "full": "Same scenarios plus relevant optimization, ABI, role, kernel and supported-core checks.",
@@ -21,5 +21,9 @@
   },
   "gaps": [
     "Physical USB/BLE/split delivery, timing, power and retention require matching production-board evidence."
-  ]
+  ],
+  "suppression_extraction": "Source KEY payload/sync stays unchanged; independent final filter owns button disposition and filtered-frame completion. Current ownership map: tests/README.md.",
+  "runtime_settings": "Whole-source adapter and driver fixtures; real API/overdue-work cancellation, DYA registry and three NVS reboot pairs; tests/README.md",
+  "scheduled_work_settings_review": "The bounded host FIFO and actual native input queue now force X admission / Y refusal. They verify retry-only-Y, no duplicate X, ordered completion and recovery across touch/layer/settings cancellation. The complete driver also tests synchronous callback reentry on either axis. X refusal now attempts no Y, so the existing failure case expects one warning/API attempt instead of two; all value/order and recovery assertions remain. The native fixture deliberately uses an eight-slot queue; this is API/kernel evidence, not physical HID congestion acceptance.",
+  "selected_workspace": "Workspace selection uses tests/integration/workspace-env.sh to export the selected manifest's ZEPHYR_MODULES and explicit Zephyr package/base paths. A Zephyr symlink to a different cache must not select that cache's module providers. The owner test_workspace_env.py exercises actual selection with a poisoned ambient list, a cache symlink, module paths containing spaces, failed project discovery and an empty selection. The keep-ambient negative control must fail these assertions. Full integration retains all supported-core, role, persistence and invalid-DTS cases. No dependency is patched or required feature disabled."
 }

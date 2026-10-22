@@ -49,15 +49,24 @@ workspace="$work_dir"
 fi
 
 export ZEPHYR_BASE="$workspace/zephyr"
+source "/src/tests/integration/workspace-env.sh"
+zmk_test_select_workspace "$workspace"
+
 
 mkdir -p "$work_dir/build"
+
+cmake_args=()
+if [ "$variant" = dya ]; then
+    cmake_args+=("-DEXTRA_CONF_FILE=$tests_dir/custom-settings.conf")
+    export ZMK_TEST_CUSTOM_SETTINGS=1
+fi
 
 firmware_dir="$work_dir/build/firmware"
 rm -rf "$firmware_dir"
 
 if ! west build -s "$workspace/zmk/app" -d "$firmware_dir" -b xiao_ble/nrf52840/zmk -- \
     -DZMK_EXTRA_MODULES="/src;$tests_dir/firmware" \
-    -DSHIELD=padstick_test >"$firmware_dir.log" 2>&1; then
+    -DSHIELD=padstick_test "${cmake_args[@]}" >"$firmware_dir.log" 2>&1; then
     echo "FAILED: $variant firmware fixture did not build"
     tail -n 80 "$firmware_dir.log"
     exit 1
@@ -69,6 +78,13 @@ grep -q '^CONFIG_ZMK_LOW_PRIORITY_WORK_QUEUE=y' "$firmware_dir/zephyr/.config"
 if grep -n 'input_processor_padstick.c:[0-9]*:[0-9]*: warning' "$firmware_dir.log"; then
     echo "FAILED: $variant firmware fixture warned in the processor"
     exit 1
+fi
+if [ "$variant" = dya ]; then
+    grep -q '^CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS=y' "$firmware_dir/zephyr/.config"
+    strings "$firmware_dir/zephyr/zmk.elf" >"$firmware_dir/zephyr/strings.txt"
+    grep -Fxq 'amgskobo__padstick' "$firmware_dir/zephyr/strings.txt"
+else
+    ! grep -q '^CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS=y' "$firmware_dir/zephyr/.config"
 fi
 echo "PASS: $variant firmware fixture"
 

@@ -1,141 +1,102 @@
-# Module-owned tests
+# PadStick owner checks
 
-Run from this checkout. Docker + Bash is the host entry point; no keyboard
-checkout, shared test dispatcher or simulator repository is required.
+PadStick owns radial conversion, source-local contact/origin/remainders and
+20 ms repeat admission/cancellation. Every original button payload and sync
+passes unchanged. Source-button disposition and filtered-frame completion belong
+to an independent final filter configured by the application.
 
-```bash
+```sh
 bash tests/run-docker.sh
 ZMK_TEST_MODE=full bash tests/run-docker.sh
+ZMK_TEST_OUTPUT=/fresh/native bash tests/run-native.sh /resolved/workspace
+ZMK_TEST_OFFLINE_WORKSPACE=/resolved/workspace ZMK_TEST_OUTPUT=/fresh/integration \
+  bash /src/tests/integration/run.sh upstream # or dya
 ```
 
-On PowerShell, set `$env:ZMK_TEST_MODE="full"` for the second command
-and invoke Git Bash explicitly. Remove the variable for the default quick run.
-
-Quick executes **all behavioral fixtures and scenarios** once with
-AddressSanitizer/UndefinedBehaviorSanitizer. Full repeats those same assertions
-under the retained optimization, coverage and (where already present) 32-bit
-variants. CI uses quick for push/PR and full for scheduled/manual runs.
-Unknown mode values fail; there is no silent skipped success.
-
-## Retained behavioral contracts
-
-| Fixture | Assertions |
+| Boundary | Canonical fixture and retained assertions |
 | --- | --- |
-| [runtime/math_harness.c](runtime/math_harness.c) | Coordinate arithmetic and saturation |
-| [runtime/driver_harness.c](runtime/driver_harness.c) | Contact lifecycle, independent streams, bounded repeat pairs and queue pressure |
-| [test_runtime_coverage.py](test_runtime_coverage.py) | Actual full runtime entry rejects empty, unrelated and partially measured reports |
+| Pure math | runtime/math_harness.c includes actual private padstick_math.h: radial distance/ramp, integer extremes, inversion, signed fractions and saturation |
+| Complete production driver | runtime/driver_harness.c includes actual driver/config/state/API/instance: independent streams, settle/touch/fixed origins, remainder, inferred contact, repeat admission/error/recovery and layer/touch cancellation |
+| Real kernel/API | integration/module/src/runtime_test.c: actual device/layer dispatcher; invalid stream, source transparency, independent contacts, one actual input pair in flight with controlled acknowledgements, overdue touch/layer cancellation; same binary3 times per core |
+| Firmware | integration/run.sh: two listeners share one node; ARM registration on unchanged stock/DYA, required low-priority work queue and no module warnings |
+| Test admission | test_runtime_coverage.py: actual full entry plus direct controls reject empty/unrelated/partial/zero-function/missed line/branch reports |
+| Offline/output safety | integration/test_offline.py and test_output_guard.py: exact clean pins, safe project/output/symlink layout, fresh output and no west calls on rejection; pinned Custom Settings archive/digest admission on DYA |
 
-Each fixture keeps its existing normal, boundary/invalid, independent-state,
-reset/cancellation and failure/recovery scenarios where applicable. Checks
-assert ordered outputs and explicit time inputs. Coverage is a full-mode gate,
-not a reason to replace assertions or a hardware completeness claim.
+Quick runs every host case once under ASan/UBSan. Full adds optimized and complete
+function/line/branch coverage, independently for math and whole driver. No lifted
+production functions or copied structures remain. X/Y share one reducer; only
+converted synchronized Y confirms an inferred contact frame. The source-local
+contact, input device, work/mutex and pending-pair state remain necessary motion
+state. Logging remains active for initialization/inference and report errors.
 
-Touch presses and their consumed releases are paired per stream. An unmatched
-release passes with its own synchronization boundary, as do all unsuppressed
-touch edges. The host fixture covers both streams, repeated consumed downs,
-independent ownership, initialization and layer resets. The native fixture
-adds the same public-device boundary on both supported cores. Its old final
-touch release after a layer reset now explicitly requires passthrough and sync;
-this is the intended suppression-policy correction, with origin assertions
-retained. Before repair, focused `PADSTICK_TEST_CASE=touch-sync` and
-`touch-unmatched` runs fail their respective boundary assertions. Default host
-selection runs both cases in every normal variant.
+Read AGENTS and resolved dependency instructions first. The offline entry checks
+stock5b51501fead672c41b5cfb396f3dafe0894bf4e9 or DYA
+e5c9b6915b56801193e359dd9bad4a167ce0d1b8, Zephyr
+10ba6d0cb38bc3d258775d27982f707599320085 and required library pins. It makes an
+unchanged local core clone and dependency links, with no fetch/repair. The DYA fixture now
+selects pinned Custom Settings and the adapter; stock does not. Supply
+`ZMK_TEST_CUSTOM_SETTINGS_ARCHIVE` for offline DYA. Identity/layout/fresh-output guards remain; deliberate
+ZMK_TEST_OFFLINE_NEGATIVE_CONTROL=skip-identity must break pin rejection tests.
+Use a fresh output and retain commands, identities, ordered raw logs and failures.
 
-The host/CI entry also requires executable gcov lines for each gated real
-function. Recording tools drive the actual full entry to reject missing
-measurements; normal full runs still measure the real compiled fixtures.
-Macro expansions remain measured in their callers. Offline preparation rejects
-outputs inside source/dependency trees and aliases, overlapping project paths
-and west/config metadata collisions before writing output. Valid sibling
-outputs and external dependencies remain supported.
+## Transferred and retired boundaries
 
-## Separate integration and physical contracts
+Former source-button pairing and final-sync assertions remain in the independent
+zmk-input-suppress host and actual listener/HID fixtures. PadStick tests preserve
+transparent KEY values/sync across stream/layer changes. Old filter profiles,
+settings/window/layer-watcher interfaces are retired, not reimplemented here.
+Prior unique assertions, maps and first failures are externally archived by the
+consumer before removal; no failed snapshot was accepted.
 
-Keep the existing owner `run-integration-docker.sh` commands and accepted
-upstream/DYA variants for changed APIs, DTS/Kconfig/registration or actual
-kernel boundaries. Native fixtures and negative guards are retained. Do not
-run all firmware variants for a pure arithmetic edit. Host extracted functions
-and controlled work queues do not prove real scheduling or transport delivery.
+Retired split-hold simulation retains state/math/error assertions above. Its
+physical ordered split/HID/LED/battery trace and unresolved failures remain gaps.
+Host queue errors are injected; native uses a real input sink with controlled
+acknowledgements and synthetic direct-call source indices. Physical HID congestion,
+arbitrary thread interleavings, sensor/USB/BLE/split delivery, timing and power
+remain separate; native does not prove physical HID acceptance. See contract.json
+and maintenance.json for current commands and ownership.
 
+## Runtime settings
 
-The existing integration command runs one native binary three times. To use
-an already resolved upstream or DYA west workspace without fetching or a board
-build, run `bash tests/run-native.sh /absolute/west/workspace`. Record its
-revision, instructions and configuration first; this command does not select
-or update dependency versions. `ZMK_TEST_OUTPUT` chooses the evidence directory.
+The complete adapter fixture covers 30 keys across two nodes, defaults/ranges,
+initialization/change events, read/type failures, rejected snapshots and duplicate
+keys. API cases cover every integer bound, atomic rejection, no-op writes,
+isolation, rebase and queued-pair admission. Named controls detect ignored apply
+and key/storage overflow. All previous motion/button assertions remain; lock
+assertions now follow one node mutex replacing per-stream mutexes.
 
-## Retired legacy simulation
+Both supported-core native entries exercise live parameters and settings canceling
+an overdue repeat. DYA tests actual registry rejection/application and NVS
+save/reload: three fresh flash files, first boot plus reload of one binary.
+Test node labels are preserved with shorter storage names. Native storage/API
+results do not establish physical Studio RPC, flash endurance or HID delivery.
 
-The active `tests/bsim` directory was removed on 2026-10-05. Before removal,
-every source and ordered snapshot was SHA256-verified in an external archive.
-Its retirement manifest retains the raw traces and assertion mapping. Archive
-locations belong to the consuming keyboard integration repository and are not
-a prerequisite for these module-owned checks.
-No failed snapshot was accepted as passing.
+For standalone DYA native settings/NVS checks, set
+`ZMK_TEST_CUSTOM_SETTINGS=1` and use a resolved fixture workspace that includes
+the pinned registry. The complete DYA integration entry selects this automatically.
 
-| Retired case | Behavioral replacement | Transport boundary |
-| --- | --- | --- |
-| split-hold | The owner fixtures above retain state/arithmetic/error assertions | Ordered physical split/HID/LED/battery delivery and timing: pending actual-device evidence |
+The readable `amgskobo__padstick` namespace is asserted literally by the whole
+adapter fixture. A `padstick_right` fixture node exercises the exact 64-byte
+storage limit; overlong-key/storage controls remain. Native node labels are
+preserved while the passthrough node name is shortened to `stick_pass`.
 
-For the affected case, exercise the same contact/layer/settings/power or
-congestion/reconnect transition on the production board. Capture each report
-value/order/timestamp and verify balanced releases and specified deadlines.
-Do not mark the archived exact radio trace as covered by a host stub.
+## Scheduled-work and settings regressions
 
-## Current test ownership and compatibility
+The bounded host FIFO and actual native input queue now force X admission / Y
+refusal. They verify retry-only-Y, no duplicate X, ordered completion and recovery
+across touch/layer/settings cancellation. The complete driver also tests synchronous
+callback reentry on either axis. X refusal now attempts no Y, so the existing
+failure case expects one warning/API attempt instead of two; all value/order and
+recovery assertions remain. The native fixture deliberately uses an eight-slot
+queue; this is API/kernel evidence, not physical HID congestion acceptance.
 
-Run the relevant public interface/build checks on both unchanged stock ZMK
-and DYA when this owner supports both. See the selected core in the manifest.
+## Selected workspace and module providers
 
-Canonical entries (run from the repository root):
-
-```bash
-bash tests/run-docker.sh
-```
-
-[maintenance.json](maintenance.json) records supported cores, current commands
-and explicit gaps. It is a reference map, not a passing test or a claim that
-registration/coverage totals establish completeness. Preserve ordered outputs,
-raw timestamps and the first failure. Read actual dependencies before execution.
-
-## Explicit offline integration
-
-The existing `tests/integration/run.sh` also accepts an already resolved cache
-through `ZMK_TEST_OFFLINE_WORKSPACE`, with a fresh `ZMK_TEST_OUTPUT` directory.
-Run this entry inside the same build image with the module mounted at `/src`.
-The offline path makes an isolated west workspace using the original fixture
-manifest, an unchanged local Git clone of ZMK and symlinks to cached dependencies; it never fetches or patches
-the core. Exact supported core, Zephyr and required library revisions and clean
-source state are checked before a build; existing outputs are rejected.
-The combined processors/vector runners also require
-`ZMK_TEST_OFFLINE_UPSTREAM_WORKSPACE`. Other runners select `upstream` or `dya`
-as their first argument (the inertia default remains upstream).
-
-DYA fixtures that enable custom settings require
-`ZMK_TEST_CUSTOM_SETTINGS_ARCHIVE`: the SHA256-checked git archive of the pinned
-`c6a7fef3a3be3d3ace5de9a4b0628c6418cd1f3f` test dependency, without local edits.
-The accepted archive digest is recorded in `tests/integration/offline.py`.
-All existing fixture assertions and cases run unchanged after preparation.
-Test offline admission and rejection with
-`python3 -m unittest discover -s tests/integration -p test_offline.py -v`.
-Core updates require an explicit pin review rather than an implicit fetch.
-
-The preparation uses Linux symlinks and runs inside the documented build image.
-`ZMK_TEST_OFFLINE_NEGATIVE_CONTROL=skip-identity` in the admission test command
-intentionally bypasses dependency identity validation; its rejection tests must fail.
-
-Standalone native/kernel entries reject existing output directories and symlinks
-before invoking west or touching prior logs. The host entry also runs
-`test_output_guard.py`, which preserves a sentinel and checks zero west calls
-for existing, linked and dangling output paths.
-
-For example, run the stock fixture inside the build image:
-
-```bash
-ZMK_TEST_OFFLINE_WORKSPACE=/resolved/upstream \
-ZMK_TEST_OUTPUT=/tmp/padstick-upstream-v1 \
-bash /src/tests/integration/run.sh upstream
-```
-
-Select `dya` with the resolved DYA workspace for its variant; provide the pinned
-custom-settings archive when that fixture enables custom settings.
+Workspace selection uses tests/integration/workspace-env.sh to export the
+selected manifest's ZEPHYR_MODULES and explicit Zephyr package/base paths. A
+Zephyr symlink to a different cache must not select that cache's module providers.
+The owner test_workspace_env.py exercises actual selection with a poisoned ambient
+list, a cache symlink, module paths containing spaces, failed project discovery and
+an empty selection. The keep-ambient negative control must fail these assertions.
+Full integration retains all supported-core, role, persistence and invalid-DTS
+cases. No dependency is patched or required feature disabled.

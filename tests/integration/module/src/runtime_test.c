@@ -10,6 +10,13 @@
  */
 
 #include <stdlib.h>
+#include <errno.h>
+#include <zephyr/sys/util.h>
+#include <zmk-input-padstick/runtime.h>
+#if IS_ENABLED(CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS)
+#include <cormoran/zmk/custom_settings.h>
+#include <zmk-input-padstick/custom_settings.h>
+#endif
 
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
@@ -52,16 +59,18 @@ static struct input_event input(uint8_t type, uint16_t code, int32_t value, bool
 static void touch(uint8_t stream, bool down) {
     struct input_event event = input(INPUT_EV_KEY, INPUT_BTN_TOUCH, down, false);
 
-    __ASSERT_NO_MSG(process(stream, &event) == ZMK_INPUT_PROC_STOP);
+    __ASSERT_NO_MSG(process(stream, &event) == ZMK_INPUT_PROC_CONTINUE);
 }
 
-/* Sends a frame the processor is expected to consume: a settle or origin frame. */
+/* Settle/origin frames become neutral markers while keeping their sync. */
 static void consumed_frame(uint8_t stream, int32_t x, int32_t y) {
     struct input_event event_x = input(INPUT_EV_ABS, INPUT_ABS_X, x, false);
     struct input_event event_y = input(INPUT_EV_ABS, INPUT_ABS_Y, y, true);
 
-    __ASSERT_NO_MSG(process(stream, &event_x) == ZMK_INPUT_PROC_STOP);
-    __ASSERT_NO_MSG(process(stream, &event_y) == ZMK_INPUT_PROC_STOP);
+    __ASSERT_NO_MSG(process(stream, &event_x) == ZMK_INPUT_PROC_CONTINUE);
+    __ASSERT_NO_MSG(process(stream, &event_y) == ZMK_INPUT_PROC_CONTINUE);
+    __ASSERT_NO_MSG(event_x.type == INPUT_EV_MSC && !event_x.sync && event_x.value == 0);
+    __ASSERT_NO_MSG(event_y.type == INPUT_EV_MSC && event_y.sync && event_y.value == 0);
 }
 
 /* Sends a frame the processor is expected to turn into this relative step. */
@@ -93,6 +102,8 @@ static void button(uint8_t stream, bool pressed, int expected) {
     struct input_event event = input(INPUT_EV_KEY, INPUT_BTN_0, pressed, true);
 
     __ASSERT_NO_MSG(process(stream, &event) == expected);
+    __ASSERT_NO_MSG(event.type == INPUT_EV_KEY && event.code == INPUT_BTN_0 &&
+                    event.value == pressed && event.sync);
 }
 
 static void test_invalid_stream_passes_through(void) {
@@ -137,22 +148,22 @@ static void test_streams_are_independent(void) {
     printk("PASS: two listeners keep their own contacts on one node\n");
 }
 
-static void test_button_suppression_stays_paired(void) {
+static void test_buttons_stay_transparent(void) {
     /* A release whose press was not suppressed here always passes. */
     button(STREAM_A, false, ZMK_INPUT_PROC_CONTINUE);
 
-    button(STREAM_A, true, ZMK_INPUT_PROC_STOP);
-    /* The other stream suppressed no press, so its release passes. */
+    button(STREAM_A, true, ZMK_INPUT_PROC_CONTINUE);
+    /* The other stream also passes an unmatched release unchanged. */
     button(STREAM_B, false, ZMK_INPUT_PROC_CONTINUE);
-    button(STREAM_A, false, ZMK_INPUT_PROC_STOP);
+    button(STREAM_A, false, ZMK_INPUT_PROC_CONTINUE);
 
-    /* A layer change forgets the press, so its release is no longer dropped. */
-    button(STREAM_A, true, ZMK_INPUT_PROC_STOP);
+    /* Layer resets affect motion state; both button edges remain transparent. */
+    button(STREAM_A, true, ZMK_INPUT_PROC_CONTINUE);
     set_other_layer(true);
     button(STREAM_A, false, ZMK_INPUT_PROC_CONTINUE);
     set_other_layer(false);
 
-    printk("PASS: button suppression stays paired per stream\n");
+    printk("PASS: buttons retain original payload and sync per stream\n");
 }
 
 static void test_layer_change_drops_the_origin(void) {
@@ -170,7 +181,7 @@ static void test_layer_change_drops_the_origin(void) {
 
     struct input_event release = input(INPUT_EV_KEY, INPUT_BTN_TOUCH, 0, false);
     __ASSERT_NO_MSG(process(STREAM_A, &release) == ZMK_INPUT_PROC_CONTINUE);
-    __ASSERT_NO_MSG(release.code == INPUT_BTN_TOUCH && release.sync);
+    __ASSERT_NO_MSG(release.code == INPUT_BTN_TOUCH && !release.sync);
 
     printk("PASS: a layer change drops the origin\n");
 }
@@ -187,8 +198,19 @@ K_SEM_DEFINE(repeat_blocked, 0, 1);
 K_SEM_DEFINE(repeat_resume, 0, 1);
 K_SEM_DEFINE(repeat_drained, 0, 1);
 
+K_SEM_DEFINE(fifo_blocked, 0, 1);
+K_SEM_DEFINE(fifo_resume, 0, 1);
+static atomic_t stall_fillers;
+#define FIFO_FILLER 0x7ffe
 static void capture_repeat(struct input_event *event, void *unused) {
     ARG_UNUSED(unused);
+    if(event->type==INPUT_EV_MSC && event->code==FIFO_FILLER) {
+        if(atomic_get(&stall_fillers)) {
+            k_sem_give(&fifo_blocked);
+            __ASSERT_NO_MSG(k_sem_take(&fifo_resume,K_SECONDS(1))==0);
+        }
+        return;
+    }
     if (event->type != INPUT_EV_REL) {
         return;
     }
@@ -254,13 +276,18 @@ static void test_real_repeat_backpressure_and_release(void) {
     event_source = NULL;
     printk("PASS: one actual input pair stays in flight until sync; release stops later repeats\n");
 }
-static void test_overdue_repeat_cancel(bool layer) {
+static void test_overdue_repeat_cancel(int reason) {
     struct k_work_q *q = zmk_workqueue_lowprio_work_q();
     __ASSERT_NO_MSG(k_work_submit_to_queue(q, &repeat_blocker) >= 0);
     __ASSERT_NO_MSG(k_sem_take(&repeat_blocked, K_SECONDS(1)) == 0);
     begin_repeat();
     k_msleep(30);
-    if (layer) {
+    struct padstick_params original;
+    if (reason == 2) {
+        __ASSERT_NO_MSG(padstick_get_params(padstick, &original) == 0);
+        struct padstick_params changed = original; changed.x_scale++;
+        __ASSERT_NO_MSG(padstick_set_params(padstick, &changed) == 0);
+    } else if (reason == 1) {
         set_other_layer(true);
     } else {
         touch(STREAM_A, false);
@@ -270,12 +297,48 @@ static void test_overdue_repeat_cancel(bool layer) {
     __ASSERT_NO_MSG(k_sem_take(&repeat_drained, K_SECONDS(1)) == 0);
     k_msleep(45);
     __ASSERT_NO_MSG(atomic_get(&sample_count) == 0);
-    if (layer) {
+    if (reason == 2) { __ASSERT_NO_MSG(padstick_set_params(padstick, &original) == 0); }
+    if (reason == 1) {
         set_other_layer(false);
     }
     event_source = NULL;
     printk("PASS: %s cancels overdue repeat before its input pair escapes\n",
-           layer ? "layer event" : "touch release");
+           reason == 2 ? "settings update" : (reason == 1 ? "layer event" : "touch release"));
+}
+
+static void test_partial_fifo(int reset) {
+    __ASSERT_NO_MSG(IS_ENABLED(CONFIG_INPUT_MODE_THREAD) && CONFIG_INPUT_QUEUE_MAX_MSGS>=4);
+    atomic_set(&stall_fillers,1);
+    __ASSERT_NO_MSG(input_report(repeat_sink,INPUT_EV_MSC,FIFO_FILLER,0,false,K_NO_WAIT)==0);
+    __ASSERT_NO_MSG(k_sem_take(&fifo_blocked,K_SECONDS(1))==0);
+    for(int i=0;i<CONFIG_INPUT_QUEUE_MAX_MSGS-1;i++) {
+        __ASSERT_NO_MSG(input_report(repeat_sink,INPUT_EV_MSC,FIFO_FILLER,0,false,K_NO_WAIT)==0);
+    }
+    begin_repeat();
+    k_msleep(30); /* only X fits; input thread remains blocked on an older filler */
+    struct padstick_params original;
+    __ASSERT_NO_MSG(padstick_get_params(padstick,&original)==0);
+    if(reset==1) { touch(STREAM_A,false); }
+    if(reset==2) { set_other_layer(true); }
+    if(reset==3) {
+        struct padstick_params changed=original; changed.x_scale++;
+        __ASSERT_NO_MSG(padstick_set_params(padstick,&changed)==0);
+    }
+    for(unsigned i=0;i<3;i++) {
+        k_sem_give(&fifo_resume);
+        __ASSERT_NO_MSG(k_sem_take(&fifo_blocked,K_SECONDS(1))==0);
+        k_msleep(25); /* older fillers open slots while X remains unconsumed */
+    }
+    touch(STREAM_A,false);
+    atomic_set(&stall_fillers,0); k_sem_give(&fifo_resume);
+    k_msleep(40);
+    __ASSERT_NO_MSG(atomic_get(&sample_count)==2);
+    check_pair(0); print_samples();
+    k_msleep(40); __ASSERT_NO_MSG(atomic_get(&sample_count)==2);
+    if(reset==2) { set_other_layer(false); }
+    if(reset==3) { __ASSERT_NO_MSG(padstick_set_params(padstick,&original)==0); }
+    event_source=NULL;
+    printk("PASS: partial real FIFO recovers one ordered pair across reset=%d without duplicate X\n",reset);
 }
 
 static void test_touch_release_boundaries(void) {
@@ -287,22 +350,76 @@ static void test_touch_release_boundaries(void) {
             struct input_event edge = input(INPUT_EV_KEY, INPUT_BTN_TOUCH, value, false);
             __ASSERT_NO_MSG(zmk_input_processor_handle_event(transparent, &edge, 0, 0, &state) ==
                             ZMK_INPUT_PROC_CONTINUE);
-            __ASSERT_NO_MSG(edge.code == INPUT_BTN_TOUCH && edge.sync);
+            __ASSERT_NO_MSG(edge.code == INPUT_BTN_TOUCH && !edge.sync);
         }
     }
     touch(STREAM_A, true);
     struct input_event unmatched = input(INPUT_EV_KEY, INPUT_BTN_TOUCH, 0, false);
     __ASSERT_NO_MSG(process(STREAM_B, &unmatched) == ZMK_INPUT_PROC_CONTINUE);
-    __ASSERT_NO_MSG(unmatched.code == INPUT_BTN_TOUCH && unmatched.sync);
+    __ASSERT_NO_MSG(unmatched.code == INPUT_BTN_TOUCH && !unmatched.sync);
     touch(STREAM_A, false);
     touch(STREAM_A, true);
     set_other_layer(true);
     struct input_event changed_route = input(INPUT_EV_KEY, INPUT_BTN_TOUCH, 0, false);
     __ASSERT_NO_MSG(process(STREAM_A, &changed_route) == ZMK_INPUT_PROC_CONTINUE);
-    __ASSERT_NO_MSG(changed_route.code == INPUT_BTN_TOUCH && changed_route.sync);
+    __ASSERT_NO_MSG(changed_route.code == INPUT_BTN_TOUCH && !changed_route.sync);
     set_other_layer(false);
-    printk("PASS: touch sync and release ownership survive stream and layer boundaries\n");
+    printk("PASS: touch payload and sync survive stream and layer boundaries\n");
 }
+
+static void test_runtime_settings(void) {
+    struct padstick_params before, after;
+    __ASSERT_NO_MSG(padstick_get_params(padstick, &before) == 0);
+    __ASSERT_NO_MSG(padstick_get_params(NULL, &after) == -ENODEV);
+    struct padstick_params changed = before;
+    changed.x_scale = -1;
+    __ASSERT_NO_MSG(padstick_set_params(padstick, &changed) == -EINVAL);
+    struct input_event down = input(INPUT_EV_KEY, INPUT_BTN_TOUCH, 1, false);
+    __ASSERT_NO_MSG(process(STREAM_A, &down) == 0 && down.type == INPUT_EV_KEY && !down.sync);
+    consumed_frame(STREAM_A, 500, 500);
+    consumed_frame(STREAM_A, 500, 500);
+    changed = before; changed.invert_x = !before.invert_x;
+    __ASSERT_NO_MSG(padstick_set_params(padstick, &changed) == 0);
+    __ASSERT_NO_MSG(padstick_get_params(padstick, &after) == 0 && after.invert_x == changed.invert_x);
+    consumed_frame(STREAM_A, 600, 600); /* new settings require settling */
+    consumed_frame(STREAM_A, 600, 600); /* new origin */
+    moving_frame(STREAM_A, 610, 600, -10, 0);
+    __ASSERT_NO_MSG(padstick_set_params(padstick, &before) == 0);
+    touch(STREAM_A, false);
+    printk("PASS: runtime settings reject, rebase and actual converted direction\n");
+}
+#if IS_ENABLED(CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS)
+static const struct zmk_custom_setting *scale_setting(void) {
+    const struct zmk_custom_setting *setting = zmk_custom_setting_find(ZMK_INPUT_PADSTICK_SUBSYSTEM,
+        "stick_runtime.x_scale");
+    __ASSERT_NO_MSG(setting != NULL); return setting;
+}
+static bool verify_reloaded_settings(void) {
+    struct zmk_custom_setting_value value;
+    __ASSERT_NO_MSG(zmk_custom_setting_read(scale_setting(), &value) == 0);
+    if (value.int32_value != 64) { __ASSERT_NO_MSG(value.int32_value == 256); return false; }
+    struct padstick_params params;
+    __ASSERT_NO_MSG(padstick_get_params(padstick, &params) == 0 && params.x_scale == 64);
+    const struct device *other = DEVICE_DT_GET(DT_NODELABEL(padstick_touch_passthrough));
+    __ASSERT_NO_MSG(padstick_get_params(other, &params) == 0 && params.x_scale == 8);
+    printk("PASS: persisted PadStick value reloads through actual registry and driver\n");
+    return true;
+}
+static void test_registry_settings(void) {
+    const struct zmk_custom_setting *setting = scale_setting();
+    struct zmk_custom_setting_value value = ZMK_CUSTOM_SETTING_VALUE_INT32(-1);
+    __ASSERT_NO_MSG(zmk_custom_setting_write(setting, &value, ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY) != 0);
+    value = (struct zmk_custom_setting_value)ZMK_CUSTOM_SETTING_VALUE_BOOL(true);
+    __ASSERT_NO_MSG(zmk_custom_setting_write(setting, &value, ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY) != 0);
+    value = (struct zmk_custom_setting_value)ZMK_CUSTOM_SETTING_VALUE_INT32(64);
+    __ASSERT_NO_MSG(zmk_custom_setting_write(setting, &value, ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST) == 0);
+    struct padstick_params params;
+    __ASSERT_NO_MSG(padstick_get_params(padstick, &params) == 0 && params.x_scale == 64);
+    const struct device *other = DEVICE_DT_GET(DT_NODELABEL(padstick_touch_passthrough));
+    __ASSERT_NO_MSG(padstick_get_params(other, &params) == 0 && params.x_scale == 8);
+    printk("PASS: actual registry type/range rejection, apply, per-node isolation and save\n");
+}
+#endif
 
 static void run_tests(void *p1, void *p2, void *p3) {
     ARG_UNUSED(p1);
@@ -313,16 +430,25 @@ static void run_tests(void *p1, void *p2, void *p3) {
     /* The test board brings listeners of its own; two streams are all these tests need. */
     __ASSERT_NO_MSG(DT_NUM_INST_STATUS_OKAY(zmk_input_listener) >= 2);
 
+#if IS_ENABLED(CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS)
+    if (verify_reloaded_settings()) { printk("padstick runtime tests: PASS\n"); exit(0); }
+#endif
     test_invalid_stream_passes_through();
     test_touch_release_boundaries();
     test_streams_are_independent();
-    test_button_suppression_stays_paired();
+    test_buttons_stay_transparent();
     test_layer_change_drops_the_origin();
     __ASSERT_NO_MSG(device_is_ready(repeat_sink));
     test_real_repeat_backpressure_and_release();
     test_overdue_repeat_cancel(false);
     test_overdue_repeat_cancel(true);
+    test_overdue_repeat_cancel(2);
 
+    for(int reset=0;reset<4;reset++) { test_partial_fifo(reset); }
+    test_runtime_settings();
+#if IS_ENABLED(CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS)
+    test_registry_settings();
+#endif
     printk("padstick runtime tests: PASS\n");
     exit(0);
 }

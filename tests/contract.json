@@ -7,18 +7,22 @@
   "contracts": [
     {
       "fixture": "tests/runtime/math_harness.c",
-      "asserts": "Coordinate arithmetic and saturation"
+      "asserts": "Actual private arithmetic header: integer sqrt/radial response, clamp/inversion, signed fractions, extreme coordinates and saturation; all existing cases retained"
     },
     {
       "fixture": "tests/runtime/driver_harness.c",
-      "asserts": "Contact lifecycle, independent streams, bounded repeat pairs and queue pressure; forwarded touch edges retain sync, only paired consumed touch releases stop, repeats and stream ownership stay independent, init/layer resets retire consumed records"
+      "asserts": "Complete actual driver with Zephyr stand-ins and actual state layouts: independent origins/remainders/contact/repeat pairs, backpressure/cancellation and unchanged source button edges/sync across layer changes"
     }
   ],
-  "kernel": ["bash", "tests/run-native.sh", "<resolved-west-workspace>"],
+  "kernel": [
+    "bash",
+    "tests/run-native.sh",
+    "<resolved-west-workspace>"
+  ],
   "kernel_contracts": [
     {
       "fixture": "tests/integration/module/src/runtime_test.c",
-      "asserts": "Existing origin/stream/button/layer and three actual input-queue cases retained; touch passthrough sync, unmatched and paired release ownership across two streams and layer resets added; old post-layer touch-release expectation intentionally changed to passthrough/sync with origin assertions retained"
+      "asserts": "Actual ZMK device API/layer dispatcher and input-queue repeat pairs: invalid index, two independent streams, transparent touch/button sync, one pair in flight with controlled acknowledgements, touch/layer cancellation of overdue work"
     }
   ],
   "limits": "Native checks include real input-queue repeat pairs with controlled acknowledgements and overdue work cancellation; this is not actual HID/radio congestion acceptance.",
@@ -32,11 +36,11 @@
     "fixtures": [
       {
         "fixture": "tests/test_runtime_coverage.py",
-        "asserts": "Actual full runtime entry rejects empty, unrelated and partial measurement; normal full runs retain measured per-function lines/branches"
+        "asserts": "Actual full runtime entry rejects empty, unrelated and partial measurement; direct controls reject absent/zero functions and missed lines/branches; separate arithmetic and complete driver coverage gates"
       },
       {
         "fixture": "tests/integration/test_offline.py",
-        "asserts": "Exact supported core/dependency pins, clean sources, missing inputs, nonoverlapping project paths separate from west/config metadata, fresh outputs outside original source/dependency trees including aliases, parseable wrong-archive rejection; identity/digest bypass controls"
+        "asserts": "Supported clean pins, safe layout/output and pinned custom-settings archive/digest admission with bypass controls; DYA selects this dependency"
       },
       {
         "fixture": "tests/integration/test_output_guard.py",
@@ -46,5 +50,9 @@
     "entry": "tests/integration/run.sh",
     "preparation": "Explicit pinned offline workspace; local unchanged ZMK clone and original fixture manifest; no fetch or source repair",
     "limits": "Admission tests control dependency responses. Actual native/API/firmware fixtures separately verify unchanged stock ZMK and DYA. Physical transport remains separate."
-  }
+  },
+  "suppression_extraction": "Source KEY payload/sync stays unchanged; independent final filter owns button disposition and filtered-frame completion. Current ownership map: tests/README.md.",
+  "runtime_settings": "Whole-source adapter and driver fixtures; real API/overdue-work cancellation, DYA registry and three NVS reboot pairs; tests/README.md",
+  "scheduled_work_settings_review": "The bounded host FIFO and actual native input queue now force X admission / Y refusal. They verify retry-only-Y, no duplicate X, ordered completion and recovery across touch/layer/settings cancellation. The complete driver also tests synchronous callback reentry on either axis. X refusal now attempts no Y, so the existing failure case expects one warning/API attempt instead of two; all value/order and recovery assertions remain. The native fixture deliberately uses an eight-slot queue; this is API/kernel evidence, not physical HID congestion acceptance.",
+  "selected_workspace": "Workspace selection uses tests/integration/workspace-env.sh to export the selected manifest's ZEPHYR_MODULES and explicit Zephyr package/base paths. A Zephyr symlink to a different cache must not select that cache's module providers. The owner test_workspace_env.py exercises actual selection with a poisoned ambient list, a cache symlink, module paths containing spaces, failed project discovery and an empty selection. The keep-ambient negative control must fail these assertions. Full integration retains all supported-core, role, persistence and invalid-DTS cases. No dependency is patched or required feature disabled."
 }

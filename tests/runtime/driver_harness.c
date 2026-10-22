@@ -15,11 +15,12 @@ struct k_mutex { int depth; };
 struct k_work { void (*handler)(struct k_work *work); };
 struct k_work_delayable { struct k_work work; bool scheduled; int64_t delay_ms; };
 struct k_work_q { int unused; };
-struct device { const void *config; void *data; const char *name; };
+struct device { const void *config; void *data; const char *name; const void *api; };
 struct input_event { const struct device *dev; uint8_t sync; uint8_t type; uint16_t code;
                      int32_t value; };
 struct zmk_input_processor_state { uint8_t input_device_index; };
 
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define ARG_UNUSED(x) ((void)(x))
@@ -33,6 +34,7 @@ struct zmk_input_processor_state { uint8_t input_device_index; };
 #define INPUT_EV_KEY 0x01
 #define INPUT_EV_REL 0x02
 #define INPUT_EV_ABS 0x03
+#define INPUT_MSC_SCAN 4
 #define INPUT_EV_MSC 0x04
 #define INPUT_REL_X 0x00
 #define INPUT_REL_Y 0x01
@@ -45,44 +47,23 @@ struct zmk_input_processor_state { uint8_t input_device_index; };
 #define ZMK_INPUT_PROC_CONTINUE 0
 #define ZMK_INPUT_PROC_STOP 1
 
-#define PADSTICK_COORD_UNSET INT32_MIN
-#define PADSTICK_DISTANCE_MAX 32767
-#define PADSTICK_INVALID_CODE 0xFFF
-#define PADSTICK_SCALE_MAX 4096
-#define PADSTICK_SCALE_SHIFT 8
-#define PADSTICK_SCALE_ONE ((int32_t)1 << PADSTICK_SCALE_SHIFT)
-#define PADSTICK_STREAM_COUNT 2
-#define PADSTICK_REPEAT_INTERVAL_MS 20
+#define DT_NUM_INST_STATUS_OKAY(c) 2
 #define ZMK_EV_EVENT_BUBBLE 0
 #define DT_INST_FOREACH_STATUS_OKAY(fn) fn(0)
+#define DT_INST_PROP_OR(n,key,fallback) fallback
 #define DEVICE_DT_INST_GET(n) (&processor)
+#define DEVICE_DT_INST_DEFINE(n,init,pm,storage,settings,level,priority,driver) \
+    static struct device processor={.data=storage,.config=settings,.api=driver};
+#define LOG_MODULE_REGISTER(...)
+#define ZMK_LISTENER(name,callback) static int (*name)(const zmk_event_t *) __attribute__((used))=callback
+#define ZMK_SUBSCRIPTION(...)
+struct zmk_input_processor_driver_api {
+ int (*handle_event)(const struct device *,struct input_event *,uint32_t,uint32_t,
+                     struct zmk_input_processor_state *);
+};
 static struct device processor;
+static bool device_is_ready(const struct device *dev) { return dev->data != NULL; }
 typedef struct { int kind; } zmk_event_t;
-
-struct padstick_config {
-    int32_t x_deadzone, y_deadzone, x_scale, y_scale, x_accel_range, y_accel_range;
-    int32_t x_accel_scale, y_accel_scale, max_x, max_y, x_center, y_center;
-    bool invert_x, invert_y, fixed_center, suppress_abs, suppress_btn_touch, suppress_btn0;
-};
-struct padstick_data;
-struct padstick_stream {
-    struct k_mutex lock;
-    struct k_work_delayable repeat_work;
-    struct padstick_data *owner;
-    const struct device *input_dev;
-    bool touch_active;
-    uint8_t unsignaled_contact_frames;
-    int32_t origin_x, origin_y, x_remainder, y_remainder;
-    bool skip_origin_frame;
-    int32_t last_x, last_y;
-    bool btn0_press_suppressed;
-    bool btn_touch_press_suppressed;
-    bool repeat_in_flight;
-};
-struct padstick_data {
-    const struct device *processor;
-    struct padstick_stream streams[PADSTICK_STREAM_COUNT];
-};
 
 static int warnings;
 static struct k_work_q lowprio_queue;
@@ -122,6 +103,13 @@ static int k_work_cancel_delayable(struct k_work_delayable *work) {
     return 0;
 }
 static bool listener_takes_pair = true;
+static void (*during_repeat_report)(uint16_t code);
+/* Bounded input API model: accepted events remain ordered until explicitly drained. */
+static bool fifo_enabled;
+static struct input_event fifo[8];
+static unsigned fifo_count, accepted_x, accepted_y;
+static int32_t refused_y;
+
 static int padstick_handle_event(const struct device *dev, struct input_event *event,
                                  uint32_t param1, uint32_t param2,
                                  struct zmk_input_processor_state *state);
@@ -134,6 +122,16 @@ static int padstick_handle_event(const struct device *dev, struct input_event *e
 static int input_report_rel(const struct device *dev, uint16_t code, int32_t value, bool sync,
                             k_timeout_t timeout) {
     assert(dev != NULL && code <= INPUT_REL_Y && timeout.ms == 0);
+    if (fifo_enabled) {
+        if (fifo_count == ARRAY_SIZE(fifo)) {
+            if(code==INPUT_REL_Y) { refused_y=value; }
+            return -11;
+        }
+        fifo[fifo_count++] = (struct input_event){.dev=dev,.type=INPUT_EV_REL,
+            .code=code,.value=value,.sync=sync};
+        if (code == INPUT_REL_X) { accepted_x++; } else { accepted_y++; }
+        return 0;
+    }
     reported[code] = value;
     reported_sync[code] = sync;
     reports++;
@@ -141,11 +139,12 @@ static int input_report_rel(const struct device *dev, uint16_t code, int32_t val
         struct input_event event = {.dev = dev, .sync = sync, .type = INPUT_EV_REL, .code = code,
                                     .value = value};
         assert(padstick_handle_event(&processor, &event, 0, 0, NULL) == 0);
+        if(during_repeat_report) { during_repeat_report(code); }
     }
     return report_result;
 }
 
-/* DRIVER_FUNCTIONS */
+#include "../../src/input_processor_padstick.c"
 
 static struct padstick_data owner;
 static struct device pad = {.name = "pad"};
@@ -156,9 +155,9 @@ static int send(struct zmk_input_processor_state *state, uint8_t type, uint16_t 
     struct input_event event = {.dev = &pad, .sync = sync, .type = type, .code = code,
                                 .value = value};
     const int ret = padstick_handle_event(&processor, &event, 0, 0, state);
-    if (ret == ZMK_INPUT_PROC_STOP) {
-        assert(event.code == PADSTICK_INVALID_CODE && !event.sync);
-    }
+    assert(ret == ZMK_INPUT_PROC_CONTINUE);
+    assert(event.sync == sync);
+    if (type == INPUT_EV_KEY) { assert(event.type == type && event.code == code && event.value == value); }
     return ret;
 }
 
@@ -168,7 +167,10 @@ static int32_t axis(struct zmk_input_processor_state *state, uint16_t code, int3
                     bool sync) {
     struct input_event event = {.dev = &pad, .sync = sync, .type = INPUT_EV_ABS, .code = code,
                                 .value = value};
-    if (padstick_handle_event(&processor, &event, 0, 0, state) == ZMK_INPUT_PROC_STOP) {
+    assert(padstick_handle_event(&processor, &event, 0, 0, state) == ZMK_INPUT_PROC_CONTINUE);
+    assert(event.sync == sync);
+    if (event.type == INPUT_EV_MSC) {
+        assert(event.code == INPUT_MSC_SCAN && event.value == 0);
         return STOPPED;
     }
     assert(event.type == INPUT_EV_REL && event.code == code);
@@ -190,7 +192,7 @@ static void run_repeat(size_t index) {
 static void start_contact(int32_t x, int32_t y) {
     assert(touch(NULL, true) == ZMK_INPUT_PROC_CONTINUE);
     assert(axis(NULL, INPUT_ABS_X, x, false) == STOPPED);
-    assert(send(NULL, INPUT_EV_ABS, INPUT_ABS_Y, y, true) == ZMK_INPUT_PROC_STOP);
+    assert(send(NULL, INPUT_EV_ABS, INPUT_ABS_Y, y, true) == ZMK_INPUT_PROC_CONTINUE);
     assert(axis(NULL, INPUT_ABS_X, x, false) == STOPPED);
     assert(axis(NULL, INPUT_ABS_Y, y, true) == STOPPED);
     assert(stream(0)->origin_x == x && stream(0)->origin_y == y);
@@ -200,18 +202,15 @@ static void test_init_and_routing(void) {
     /* Init clears whatever a stream held. */
     for (size_t i = 0; i < PADSTICK_STREAM_COUNT; i++) {
         owner.streams[i].touch_active = true;
-        owner.streams[i].btn0_press_suppressed = true;
-        owner.streams[i].btn_touch_press_suppressed = true;
-        owner.streams[i].lock.depth = 3;
+        owner.lock.depth = 3;
         owner.streams[i].input_dev = &pad;
         owner.streams[i].x_remainder = owner.streams[i].y_remainder = 7;
         owner.streams[i].unsignaled_contact_frames = 1;
     }
     assert(padstick_init(&processor) == 0);
     for (size_t i = 0; i < PADSTICK_STREAM_COUNT; i++) {
-        assert(!stream(i)->touch_active && !stream(i)->btn0_press_suppressed);
-        assert(!stream(i)->btn_touch_press_suppressed);
-        assert(stream(i)->lock.depth == 0 && stream(i)->input_dev == NULL);
+        assert(!stream(i)->touch_active);
+        assert(owner.lock.depth == 0 && stream(i)->input_dev == NULL);
         assert(stream(i)->x_remainder == 0 && stream(i)->y_remainder == 0);
         assert(stream(i)->unsignaled_contact_frames == 0);
     }
@@ -257,7 +256,7 @@ static void test_contact_steps(void) {
     assert(warnings == 0); /* delivered reports warn about nothing */
     report_result = -11;
     run_repeat(0);
-    assert(warnings == 2 && stream(0)->repeat_work.scheduled);
+    assert(warnings == 1 && stream(0)->repeat_work.scheduled);
     /* A pair that never made it leaves nothing in flight. */
     assert(!stream(0)->repeat_in_flight);
     report_result = 0;
@@ -265,22 +264,22 @@ static void test_contact_steps(void) {
     /* Straight down: X steps nothing and the pair is still sent. */
     assert(axis(NULL, INPUT_ABS_X, 500, false) == 0);
     run_repeat(0);
-    assert(reports == 6 && reported[INPUT_REL_X] == 0 && reported[INPUT_REL_Y] < 0);
+    assert(reports == 5 && reported[INPUT_REL_X] == 0 && reported[INPUT_REL_Y] < 0);
     assert(!stream(0)->repeat_in_flight); /* the listener took the pair */
 
     /* A listener held up: one pair waits in the queue, and the repeat adds
      * nothing to it until the pair's synchronized step comes back. */
     listener_takes_pair = false;
     run_repeat(0);
-    assert(reports == 8 && stream(0)->repeat_in_flight);
+    assert(reports == 7 && stream(0)->repeat_in_flight);
     run_repeat(0);
-    assert(reports == 8 && stream(0)->repeat_work.scheduled);
+    assert(reports == 7 && stream(0)->repeat_work.scheduled);
     assert(send(NULL, INPUT_EV_REL, INPUT_REL_X, 1, false) == ZMK_INPUT_PROC_CONTINUE);
     assert(stream(0)->repeat_in_flight); /* not the step that closes it */
     assert(send(NULL, INPUT_EV_REL, INPUT_REL_Y, 1, true) == ZMK_INPUT_PROC_CONTINUE);
     assert(!stream(0)->repeat_in_flight);
     run_repeat(0);
-    assert(reports == 10 && stream(0)->repeat_in_flight);
+    assert(reports == 9 && stream(0)->repeat_in_flight);
     listener_takes_pair = true;
 
     /* Diagonal: each axis is given the other's offset from the origin. The
@@ -289,23 +288,23 @@ static void test_contact_steps(void) {
     /* A touch edge starts the contact over with nothing in flight. */
     assert(!stream(0)->repeat_in_flight);
     start_contact(500, 500);
-    const struct padstick_config *cfg = processor.config;
+    const struct padstick_params *cfg = processor.config;
     int32_t rx = stream(0)->x_remainder;
-    const int32_t want_x = padstick_apply_axis('x', 800, 500, cfg->x_deadzone, cfg->x_scale,
+    const int32_t want_x = padstick_apply_axis(800, 500, cfg->x_deadzone, cfg->x_scale,
                                                cfg->x_accel_range, cfg->x_accel_scale,
                                                cfg->max_x, cfg->invert_x, &rx, 0);
     assert(axis(NULL, INPUT_ABS_X, 800, false) == want_x);
     int32_t ry = stream(0)->y_remainder;
-    const int32_t want_y = padstick_apply_axis('y', 800, 500, cfg->y_deadzone, cfg->y_scale,
+    const int32_t want_y = padstick_apply_axis(800, 500, cfg->y_deadzone, cfg->y_scale,
                                                cfg->y_accel_range, cfg->y_accel_scale,
                                                cfg->max_y, cfg->invert_y, &ry, 300);
     assert(axis(NULL, INPUT_ABS_Y, 800, true) == want_y && want_y != 0);
     rx = stream(0)->x_remainder;
     ry = stream(0)->y_remainder;
-    const int32_t repeat_x = padstick_apply_axis('x', 800, 500, cfg->x_deadzone, cfg->x_scale,
+    const int32_t repeat_x = padstick_apply_axis(800, 500, cfg->x_deadzone, cfg->x_scale,
                                                  cfg->x_accel_range, cfg->x_accel_scale,
                                                  cfg->max_x, cfg->invert_x, &rx, 300);
-    const int32_t repeat_y = padstick_apply_axis('y', 800, 500, cfg->y_deadzone, cfg->y_scale,
+    const int32_t repeat_y = padstick_apply_axis(800, 500, cfg->y_deadzone, cfg->y_scale,
                                                  cfg->y_accel_range, cfg->y_accel_scale,
                                                  cfg->max_y, cfg->invert_y, &ry, 300);
     reports = 0;
@@ -373,7 +372,7 @@ static void test_partial_frames(void) {
     assert(touch(NULL, false) == ZMK_INPUT_PROC_CONTINUE);
     /* An axis whose origin is not taken yet shares nothing, even though its
      * last coordinate is known: exactly the step of this axis alone. */
-    const struct padstick_config *cfg = processor.config;
+    const struct padstick_params *cfg = processor.config;
     for (int axis_y = 0; axis_y <= 1; axis_y++) {
         assert(touch(NULL, false) == ZMK_INPUT_PROC_CONTINUE);
         assert(touch(NULL, true) == ZMK_INPUT_PROC_CONTINUE);
@@ -382,7 +381,7 @@ static void test_partial_frames(void) {
         const uint16_t code = axis_y ? INPUT_ABS_Y : INPUT_ABS_X;
         assert(axis(NULL, code, 500, false) == STOPPED);        /* this origin only */
         int32_t rem = axis_y ? stream(0)->y_remainder : stream(0)->x_remainder;
-        const int32_t want = padstick_apply_axis('x', 800, 500, cfg->x_deadzone, cfg->x_scale,
+        const int32_t want = padstick_apply_axis(800, 500, cfg->x_deadzone, cfg->x_scale,
                                                  cfg->x_accel_range, cfg->x_accel_scale,
                                                  cfg->max_x, false, &rem, 0);
         assert(want != 0 && axis(NULL, code, 800, false) == want);
@@ -415,20 +414,18 @@ static void test_inferred_contact(void) {
 
 static void test_buttons(void) {
     /* Suppression is paired: only the release of a dropped press is dropped. */
-    assert(send(NULL, INPUT_EV_KEY, INPUT_BTN_0, 1, false) == ZMK_INPUT_PROC_STOP);
-    assert(send(NULL, INPUT_EV_KEY, INPUT_BTN_0, 0, false) == ZMK_INPUT_PROC_STOP);
+    assert(send(NULL, INPUT_EV_KEY, INPUT_BTN_0, 1, false) == ZMK_INPUT_PROC_CONTINUE);
+    assert(send(NULL, INPUT_EV_KEY, INPUT_BTN_0, 0, false) == ZMK_INPUT_PROC_CONTINUE);
     assert(send(NULL, INPUT_EV_KEY, INPUT_BTN_0, 0, false) == ZMK_INPUT_PROC_CONTINUE);
 }
 
-static void test_fixed_center_config(struct padstick_config *config) {
+static void test_fixed_center_config(struct padstick_params *config) {
     /* Both origins come from the center, so the first frame after the settle
      * frame already steps, and the first axis is shared radially. */
     config->fixed_center = true;
-    config->suppress_btn_touch = true;
-    config->suppress_btn0 = false;
-    config->suppress_abs = true;
+    assert(padstick_set_params(&processor, config) == 0);
 
-    assert(touch(NULL, true) == ZMK_INPUT_PROC_STOP);
+    assert(touch(NULL, true) == ZMK_INPUT_PROC_CONTINUE);
     assert(axis(NULL, INPUT_ABS_Y, 500, true) == STOPPED); /* settle */
     assert(axis(NULL, INPUT_ABS_Y, 900, true) > 0);         /* seeds both */
     assert(stream(0)->origin_x == 512 && stream(0)->origin_y == 512);
@@ -438,12 +435,12 @@ static void test_fixed_center_config(struct padstick_config *config) {
     run_repeat(0);
     assert(reports == 2);
 
-    assert(touch(NULL, true) == ZMK_INPUT_PROC_STOP);
+    assert(touch(NULL, true) == ZMK_INPUT_PROC_CONTINUE);
     assert(axis(NULL, INPUT_ABS_X, 500, true) == STOPPED); /* settle */
     /* Seeds both origins; Y has no coordinate yet, so X steps alone - by
      * exactly its own step, below the limit so a wrong share would show. */
     int32_t rem = stream(0)->x_remainder;
-    const int32_t alone = padstick_apply_axis('x', 600, 512, config->x_deadzone, config->x_scale,
+    const int32_t alone = padstick_apply_axis(600, 512, config->x_deadzone, config->x_scale,
                                               config->x_accel_range, config->x_accel_scale,
                                               config->max_x, config->invert_x, &rem, 0);
     assert(alone > 0 && alone < config->max_x);
@@ -452,16 +449,14 @@ static void test_fixed_center_config(struct padstick_config *config) {
     assert(reports == 2);
 
     /* BTN_0 left alone, and a stale suppression forgotten. */
-    stream(0)->btn0_press_suppressed = true;
     assert(send(NULL, INPUT_EV_KEY, INPUT_BTN_0, 0, false) == ZMK_INPUT_PROC_CONTINUE);
-    assert(!stream(0)->btn0_press_suppressed);
     /* Other absolute axes suppressed. */
-    assert(send(NULL, INPUT_EV_ABS, INPUT_ABS_PRESSURE, 40, false) == ZMK_INPUT_PROC_STOP);
-    assert(touch(NULL, false) == ZMK_INPUT_PROC_STOP);
+    assert(send(NULL, INPUT_EV_ABS, INPUT_ABS_PRESSURE, 40, false) == ZMK_INPUT_PROC_CONTINUE);
+    assert(touch(NULL, false) == ZMK_INPUT_PROC_CONTINUE);
 }
 
-static void test_touch_sync(struct padstick_config *config) {
-    config->suppress_btn_touch = false;
+static void test_touch_sync(struct padstick_params *config) {
+    ARG_UNUSED(config);
     assert(padstick_init(&processor) == 0);
     for (size_t index = 0; index < PADSTICK_STREAM_COUNT; index++) {
         struct zmk_input_processor_state state = {.input_device_index = index};
@@ -469,14 +464,14 @@ static void test_touch_sync(struct padstick_config *config) {
             struct input_event event = {.dev = &pad, .type = INPUT_EV_KEY,
                                         .code = INPUT_BTN_TOUCH, .value = value, .sync = false};
             assert(padstick_handle_event(&processor, &event, 0, 0, &state) == ZMK_INPUT_PROC_CONTINUE);
-            assert(event.code == INPUT_BTN_TOUCH && event.sync && "forwarded touch needs its own sync");
+            assert(event.code == INPUT_BTN_TOUCH && !event.sync && "source touch remains unchanged");
         }
     }
     puts("padstick forwarded touch sync: PASS");
 }
 
-static void test_unmatched_touch_release(struct padstick_config *config) {
-    config->suppress_btn_touch = true;
+static void test_unmatched_touch_release(struct padstick_params *config) {
+    ARG_UNUSED(config);
     assert(padstick_init(&processor) == 0);
     for (size_t index = 0; index < PADSTICK_STREAM_COUNT; index++) {
         struct zmk_input_processor_state state = {.input_device_index = index};
@@ -484,28 +479,174 @@ static void test_unmatched_touch_release(struct padstick_config *config) {
                                       .code = INPUT_BTN_TOUCH, .value = 0, .sync = false};
         assert(padstick_handle_event(&processor, &release, 0, 0, &state) == ZMK_INPUT_PROC_CONTINUE &&
                "touch release whose press was not consumed must pass");
-        assert(release.code == INPUT_BTN_TOUCH && release.sync);
-        assert(touch(&state, true) == ZMK_INPUT_PROC_STOP);
-        assert(touch(&state, true) == ZMK_INPUT_PROC_STOP);
-        assert(touch(&state, false) == ZMK_INPUT_PROC_STOP);
+        assert(release.code == INPUT_BTN_TOUCH && !release.sync);
+        assert(touch(&state, true) == ZMK_INPUT_PROC_CONTINUE);
+        assert(touch(&state, true) == ZMK_INPUT_PROC_CONTINUE);
+        assert(touch(&state, false) == ZMK_INPUT_PROC_CONTINUE);
         assert(touch(&state, false) == ZMK_INPUT_PROC_CONTINUE);
     }
     struct zmk_input_processor_state first = {.input_device_index = 0};
     struct zmk_input_processor_state second = {.input_device_index = 1};
-    assert(touch(&first, true) == ZMK_INPUT_PROC_STOP);
+    assert(touch(&first, true) == ZMK_INPUT_PROC_CONTINUE);
     assert(touch(&second, false) == ZMK_INPUT_PROC_CONTINUE);
-    assert(touch(&first, false) == ZMK_INPUT_PROC_STOP);
-    config->suppress_btn_touch = false;
+    assert(touch(&first, false) == ZMK_INPUT_PROC_CONTINUE);
     assert(padstick_init(&processor) == 0);
     puts("padstick touch release ownership: PASS");
 }
 
+static void test_runtime_params(void) {
+    struct padstick_params original = {0}, after = {0};
+    assert(padstick_get_params(&processor, &original) == 0);
+    assert(padstick_get_params(NULL, &after) == -ENODEV);
+    assert(padstick_get_params(&processor, NULL) == -EINVAL);
+    assert(padstick_set_params(NULL, &original) == -ENODEV);
+    assert(padstick_set_params(&processor, NULL) == -EINVAL);
+    struct device bad = processor; bad.api = NULL;
+    assert(padstick_get_params(&bad, &after) == -ENODEV);
+    bad = processor; bad.data = NULL;
+    assert(padstick_set_params(&bad, &original) == -ENODEV);
+    struct { size_t offset; int32_t lo, hi; } bounds[] = {
+        {offsetof(struct padstick_params, x_deadzone),0,32767},
+        {offsetof(struct padstick_params, y_deadzone),0,32767},
+        {offsetof(struct padstick_params, x_scale),0,4096},
+        {offsetof(struct padstick_params, y_scale),0,4096},
+        {offsetof(struct padstick_params, x_accel_range),0,32767},
+        {offsetof(struct padstick_params, y_accel_range),0,32767},
+        {offsetof(struct padstick_params, x_accel_scale),0,4096},
+        {offsetof(struct padstick_params, y_accel_scale),0,4096},
+        {offsetof(struct padstick_params, max_x),0,32767},
+        {offsetof(struct padstick_params, max_y),0,32767},
+        {offsetof(struct padstick_params, x_center),INT32_MIN+1,INT32_MAX},
+        {offsetof(struct padstick_params, y_center),INT32_MIN+1,INT32_MAX},
+    };
+    for (size_t i=0;i<sizeof(bounds)/sizeof(bounds[0]);i++) {
+        struct padstick_params p=original;
+        int32_t *field=(int32_t *)((char *)&p+bounds[i].offset);
+        *field=bounds[i].lo-1;
+        assert(padstick_set_params(&processor,&p)==-EINVAL);
+        if (bounds[i].hi<INT32_MAX) {
+            *field=bounds[i].hi+1;
+            assert(padstick_set_params(&processor,&p)==-EINVAL);
+        }
+        assert(padstick_get_params(&processor,&after)==0);
+        for(size_t j=0;j<sizeof(bounds)/sizeof(bounds[0]);j++) {
+            assert(*(int32_t *)((char *)&original+bounds[j].offset)==*(int32_t *)((char *)&after+bounds[j].offset));
+        }
+        assert(original.invert_x==after.invert_x && original.invert_y==after.invert_y && original.fixed_center==after.fixed_center);
+        *field=bounds[i].lo; assert(padstick_set_params(&processor,&p)==0);
+        *field=bounds[i].hi; assert(padstick_set_params(&processor,&p)==0);
+        assert(padstick_set_params(&processor,&original)==0);
+    }
+    assert(padstick_set_params(&processor,&original)==0); /* unchanged */
+    start_contact(500,500);
+    assert(axis(NULL,INPUT_ABS_X,900,false)>0);
+    assert(axis(NULL,INPUT_ABS_Y,800,true)>0);
+    listener_takes_pair=false; reports=0; run_repeat(0);
+    assert(reports==2 && stream(0)->repeat_in_flight);
+    int32_t origin=stream(0)->origin_x;
+    assert(padstick_set_params(&processor,&original)==0);
+    assert(stream(0)->origin_x==origin && stream(0)->repeat_work.scheduled);
+    struct padstick_params changed=original; changed.invert_x=!original.invert_x;
+    changed.invert_y=true; changed.fixed_center=false;
+    assert(padstick_set_params(&processor,&changed)==0);
+    assert(stream(0)->repeat_in_flight && !stream(0)->repeat_work.scheduled);
+    assert(stream(0)->touch_active && stream(0)->skip_origin_frame);
+    run_repeat(0); assert(reports==2); /* no old-setting repeats */
+    assert(axis(NULL,INPUT_ABS_X,600,false)==STOPPED);
+    assert(axis(NULL,INPUT_ABS_Y,600,true)==STOPPED);
+    assert(axis(NULL,INPUT_ABS_X,600,false)==STOPPED);
+    assert(axis(NULL,INPUT_ABS_Y,600,true)==STOPPED);
+    assert(axis(NULL,INPUT_ABS_X,900,false)<0);
+    run_repeat(0); assert(reports==2); /* old queued pair still owns admission */
+    assert(send(NULL,INPUT_EV_REL,INPUT_REL_Y,1,true)==0);
+    listener_takes_pair=true; run_repeat(0); assert(reports==4);
+    struct padstick_data independent;
+    struct device other={.data=&independent,.config=&original,.api=&padstick_driver_api};
+    assert(padstick_init(&other)==0);
+    assert(padstick_get_params(&other,&after)==0 && after.invert_x==original.invert_x);
+    assert(padstick_set_params(&processor,&original)==0);
+    assert(padstick_init(&processor)==0);
+    reports=0;
+    puts("padstick runtime params: all bounds, atomic rejection, no-op, rebase and queued pair PASS");
+}
+
+static uint16_t reset_on_axis;
+static unsigned synchronous_reset;
+static void reset_inside_repeat_report(uint16_t code) {
+    if(code!=reset_on_axis) { return; }
+    during_repeat_report=NULL;
+    if(synchronous_reset==0) { assert(touch(NULL,false)==0); }
+    if(synchronous_reset==1) { const zmk_event_t layer={1}; assert(padstick_layer_listener(&layer)==0); }
+    if(synchronous_reset==2) {
+        struct padstick_params p=owner.params; p.invert_x=!p.invert_x;
+        assert(padstick_set_params(&processor,&p)==0);
+    }
+}
+static void test_synchronous_repeat_reset(void) {
+    for(synchronous_reset=0;synchronous_reset<3;synchronous_reset++) {
+        for(reset_on_axis=INPUT_REL_X;reset_on_axis<=INPUT_REL_Y;reset_on_axis++) {
+            assert(padstick_init(&processor)==0); start_contact(500,500);
+            assert(axis(NULL,INPUT_ABS_X,900,false)>0);
+            assert(axis(NULL,INPUT_ABS_Y,800,true)>0);
+            during_repeat_report=reset_inside_repeat_report; reports=0;
+            run_repeat(0);
+            assert(reports==2 && !stream(0)->repeat_in_flight && !stream(0)->repeat_y_pending);
+            run_repeat(0); assert(reports==2);
+        }
+    }
+    reports=warnings=0;
+    puts("padstick synchronous repeat: touch/layer/settings reentry on either axis PASS");
+}
+
+static void test_partial_repeat_admission(void) {
+    for(unsigned reset=0;reset<4;reset++) {
+        assert(padstick_init(&processor)==0);
+        start_contact(500,500);
+        assert(axis(NULL,INPUT_ABS_X,900,false)>0);
+        assert(axis(NULL,INPUT_ABS_Y,800,true)>0);
+        fifo_enabled=true; fifo_count=7; accepted_x=accepted_y=0;
+        memset(fifo,0,sizeof(fifo)); /* seven unrelated older queue entries */
+        run_repeat(0); assert(accepted_x==1 && accepted_y==0);
+        const int32_t owed_y=refused_y; assert(owed_y>0);
+        run_repeat(0); assert(accepted_x==1 && accepted_y==0); /* still full */
+        struct padstick_params original=owner.params;
+        if(reset==1) { assert(touch(NULL,false)==0); }
+        if(reset==2) {
+            const zmk_event_t layer={1}; assert(padstick_layer_listener(&layer)==0);
+        }
+        if(reset==3) {
+            struct padstick_params changed=original; changed.invert_x=!changed.invert_x;
+            assert(padstick_set_params(&processor,&changed)==0);
+        }
+        for(unsigned i=0;i<3;i++) {
+            memmove(fifo,fifo+1,(--fifo_count)*sizeof(*fifo));
+            run_repeat(0);
+            assert(accepted_x==1 && "partial repeat must not enqueue another X");
+        }
+        assert(accepted_y==1 && "retry must complete the admitted frame");
+        assert(fifo_count>=2 && fifo[fifo_count-2].code==INPUT_REL_X &&
+               !fifo[fifo_count-2].sync && fifo[fifo_count-1].code==INPUT_REL_Y &&
+               fifo[fifo_count-1].sync && fifo[fifo_count-1].value==owed_y);
+        fifo_enabled=false;
+        for(unsigned i=0;i<fifo_count;i++) {
+            struct input_event event=fifo[i];
+            assert(padstick_handle_event(&processor,&event,0,0,NULL)==0);
+        }
+        assert(!stream(0)->repeat_in_flight);
+        reports=0; run_repeat(0); assert(reports==(reset==0?2:0));
+        assert(touch(NULL,false)==0);
+        if(reset==3) { assert(padstick_set_params(&processor,&original)==0); }
+    }
+    reports=warnings=0;
+    puts("padstick partial FIFO admission, reset cancellation and recovery: PASS");
+}
+
 int main(void) {
-    struct padstick_config config = {
+    struct padstick_params config = {
         .x_deadzone = 48, .y_deadzone = 48, .x_scale = 8, .y_scale = 8,
         .x_accel_range = 464, .y_accel_range = 464, .x_accel_scale = 12, .y_accel_scale = 12,
-        .max_x = 16, .max_y = 16, .x_center = 512, .y_center = 512, .suppress_btn0 = true};
-    processor = (struct device){.config = &config, .data = &owner, .name = "padstick"};
+        .max_x = 16, .max_y = 16, .x_center = 512, .y_center = 512};
+    processor = (struct device){.config = &config, .data = &owner, .name = "padstick", .api = &padstick_driver_api};
 
     const char *selected = getenv("PADSTICK_TEST_CASE");
     if (selected != NULL) {
@@ -523,6 +664,9 @@ int main(void) {
     test_init_and_routing();
     test_touch_sync(&config);
     test_unmatched_touch_release(&config);
+    test_runtime_params();
+    test_synchronous_repeat_reset();
+    test_partial_repeat_admission();
     test_contact_steps();
     test_partial_frames();
     test_inferred_contact();
@@ -534,8 +678,6 @@ int main(void) {
         stream(i)->touch_active = true;
         stream(i)->input_dev = &pad;
         stream(i)->origin_x = stream(i)->origin_y = 100;
-        stream(i)->btn0_press_suppressed = true;
-        stream(i)->btn_touch_press_suppressed = true;
         stream(i)->repeat_work.scheduled = true;
     }
     const zmk_event_t layer_changed = {1};
@@ -543,12 +685,11 @@ int main(void) {
     for (size_t i = 0; i < PADSTICK_STREAM_COUNT; i++) {
         assert(!stream(i)->touch_active && stream(i)->input_dev == NULL);
         assert(stream(i)->origin_x == PADSTICK_COORD_UNSET && stream(i)->skip_origin_frame);
-        assert(!stream(i)->btn0_press_suppressed && !stream(i)->repeat_work.scheduled);
-        assert(!stream(i)->btn_touch_press_suppressed);
+        assert(!stream(i)->repeat_work.scheduled);
     }
 
     for (size_t i = 0; i < PADSTICK_STREAM_COUNT; i++) {
-        assert(stream(i)->lock.depth == 0);
+        assert(owner.lock.depth == 0);
     }
     puts("padstick driver: PASS");
     return 0;

@@ -83,15 +83,3 @@ properties:
   fixed-center:
     type: boolean
     description: Use x-center and y-center as the joystick origin instead of the touched position.
-
-  suppress-abs:
-    type: boolean
-    description: Suppress unconverted absolute events so ABS reports do not leak downstream.
-
-  suppress-btn-touch:
-    type: boolean
-    description: Suppress BTN_TOUCH events after using them to track contact state.
-
-  suppress-btn0:
-    type: boolean
-    description: Suppress BTN_0 events when the trackpad reports a physical click.

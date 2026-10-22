@@ -6,10 +6,10 @@
 
 A ZMK input processor for using an absolute-reporting trackpad as a small joystick-style pointing surface.
 
-Touch suppression consumes the press and its paired release on each listener.
-A release whose press was not consumed passes through, including after a layer
-change. Forwarded touch edges have their own synchronization boundary so the
-final settling coordinates cannot leave a release waiting for another report.
+All original button events pass unchanged. Append an independent
+`zmk-input-suppress` instance to every selected listener route; it owns button
+policy, release disposition and report boundaries. Remove the former
+`suppress-abs`, `suppress-btn-touch` and `suppress-btn0` properties.
 
 `zmk,input-processor-padstick` ignores the first complete absolute report frame after `INPUT_BTN_TOUCH`, then converts later absolute reports to `INPUT_REL_X` and `INPUT_REL_Y`. By default the next `INPUT_ABS_X` and `INPUT_ABS_Y` values become the temporary touch origin. When `fixed-center` is enabled, the configured `x-center` / `y-center` coordinates are used instead. While that contact remains active, padstick repeats the latest deflection every 20 ms, so holding a direction behaves as a joystick without requiring the source driver to resend identical ABS coordinates.
 
@@ -22,7 +22,7 @@ final settling coordinates cannot leave a release waiting for another report.
 - **Radial response**: Speed depends only on how far the finger is, not on which way it is pushed, and the deadzone is a circle.
 - **Sub-pixel accumulation**: Keeps fractional REL counts per axis so low scale values do not drop small movement.
 - **Held-direction repeat**: Reprocesses the latest complete contact coordinate pair every 20 ms while the finger remains down. The fixed cadence is processor behavior, not an additional DTS parameter.
-- **Optional suppression**: Can consume original ABS, `BTN_TOUCH`, and `BTN_0` events after processing.
+- **Output composition**: A separate final filter owns source-event suppression.
 - **Layer-change safe**: Drops the origin when the layer changes, so a contact split across two chains is not measured against an unrelated one.
 - **Split-ready**: Enabled only on the central side for split builds.
 
@@ -71,8 +71,6 @@ Include the standard helper in your shield's `.overlay` or `.zmk.dts`:
     fixed-center;
     x-center = <512>;
     y-center = <512>;
-    suppress-abs;
-    suppress-btn-touch;
 };
 
 /* Add padstick to your trackpad pipeline */
@@ -98,6 +96,7 @@ The defaults are tuned for a 1024 x 1024 absolute trackpad. A 48-count deadzone 
 - Held-direction repeat runs on ZMK's low-priority work queue, not Zephyr's system work queue, so continuous output cannot delay Bluetooth, split, watchdog, or device-PM system work.
 - `BTN_TOUCH` release cancels pending repeat work before another pair can be scheduled.
 - At most one repeat pair is queued at a time: the next waits until the previous pair has come back through this processor. Zephyr's input queue is small and does not block, and a congested host link can hold the listener for 100 ms per report; a repeat every 20 ms then filled it and the next event was dropped, a touch release included, so the repeat outlived the contact. Normally the pair is taken within the same millisecond and nothing changes.
+- If only X fits in the input queue, retry its missing synchronized Y before admitting another X. Touch, layer and settings resets cancel later repeats; an already admitted X still receives its completion. A failed X admits no Y.
 
 ### 4. Radial Response
 
@@ -131,13 +130,14 @@ Which processors run is decided per event, from the layer active at that moment,
 
 When a layer selects padstick while a finger is already down, its `BTN_TOUCH` press belongs to the old chain and is not visible here. After the settle frame, padstick waits for two complete synchronized coordinate frames before treating that as a continuing contact and enabling held-direction repeat. One final coordinate pair after a release therefore cannot restart the repeat worker.
 
-`suppress-btn0` never drops a `BTN_0` release whose press was not suppressed here. Passing a release through is always safe - the press it belongs to already reached the host - while dropping one would leave the button held down with nothing left to release it. That record is cleared on a layer change too.
+Button disposition and owed releases now live in the shared final filter;
+layer resets only cancel PadStick motion/origin state.
 
 ### 7. Multiple Input Listeners
 
 One padstick processor node may be shared by multiple input listeners. Contact
 coordinates, origins, fractional remainders, held-direction repeat work, the
-original input device and suppressed-button state are isolated by
+original input device are isolated by
 `input_device_index`. Settings remain node-wide. An invalid runtime index is
 passed through without a log line and never aliases stream zero.
 
@@ -145,7 +145,7 @@ passed through without a log line and never aliases stream zero.
 
 Enable Zephyr logging and set ZMK's log level to debug to enable `LOG_DBG` output from this processor. For example, set `CONFIG_LOG=y` and `CONFIG_ZMK_LOG_LEVEL_DBG=y` in your ZMK config. Your build still needs a ZMK log backend, such as USB logging, RTT, or UART, to view the logs. `CONFIG_ZMK_USB_LOGGING=y` can be used when you want USB CDC ACM logging.
 
-Debug logs include touch resets, stored origin coordinates, raw ABS coordinates, origin deltas, post-deadzone magnitude, fixed-point scaled value, incoming and outgoing sub-pixel remainder, generated REL output, saturation, and suppressed input events.
+Debug logs describe initialization and inferred continuing contacts. Failed repeat input reports produce warnings. The arithmetic helper has no logging or kernel dependency.
 
 ## Configuration Reference
 
@@ -166,9 +166,6 @@ Debug logs include touch resets, stored origin coordinates, raw ABS coordinates,
 | `invert-x` | bool | false | Invert generated `REL_X` direction. |
 | `invert-y` | bool | false | Invert generated `REL_Y` direction. |
 | `fixed-center` | bool | false | Use `x-center` and `y-center` as the joystick origin instead of the touched position. |
-| `suppress-abs` | bool | false | Suppress unconverted absolute events so ABS reports do not leak downstream. |
-| `suppress-btn-touch` | bool | false | Suppress `BTN_TOUCH` events after using them to track contact state. |
-| `suppress-btn0` | bool | false | Suppress `BTN_0` events when the trackpad reports a physical click. |
 
 Scale and acceleration scale values are clamped to `0..4096` at runtime. Deadzone and max values are clamped to non-negative values.
 
@@ -180,22 +177,18 @@ bash ./tests/run-integration-docker.sh upstream
 bash ./tests/run-integration-docker.sh dya
 ```
 
-The host suite lifts the driver's own functions into the stubbed harnesses
-in `tests/runtime/` and runs them optimized, under ASan/UBSan, and with gcov:
-the five arithmetic functions, including radial clamping and saturation, and
-the twelve that handle events, the settle and origin frames, the repeat
-worker, paired `BTN_0` suppression and the contact inferred after a layer
-switch. CI requires 100% line and branch coverage of each of those
-functions and of the layer listener's reset of every stream, lifted with its
-macro. The runner fails if any function in the source has no gate.
-Devicetree instantiation itself is left to the integration fixtures below.
+The host suite includes the actual private arithmetic header and the complete
+unchanged production driver in separate fixtures. It runs every behavior under
+ASan/UBSan; full mode adds optimized and complete function/line/branch coverage
+checks. Test stand-ins provide Zephyr services without duplicating PadStick
+state layouts or exporting production functions. See [the ownership map](tests/README.md).
 
-Each variant builds a firmware fixture in which two input listeners share one
-padstick node, then runs native_sim self-tests against that ZMK: an
-out-of-range listener index passes through untouched, two listeners keep
-their own contacts, `BTN_0` suppression stays paired per listener, and a layer
-change drops the origin. `upstream` uses ZMK `main`; `dya` uses the DYA ZMK
-fork. GitHub Actions runs both on every pull request, on pushes to `main`, and weekly.
+Each integration variant builds an ARM firmware fixture in which two listeners
+share one node, then runs the same native binary three times. Native assertions
+cover independent contacts/origins, transparent button payloads and sync, layer
+resets, real input-queue repeat admission with controlled acknowledgements, and
+overdue work cancellation. These are kernel/API checks; physical HID/radio
+congestion and board timing require separate evidence.
 
 ## License
 
@@ -207,9 +200,34 @@ controlled acknowledgements, touch cancellation and queued layer cancellation.
 Each binary runs three times. This does not replace actual HID/radio congestion checks;
 see [the test guide](tests/README.md).
 
-## Current test entry points (2026-10-05)
+## DYA Studio settings
 
-See [the module-owned test guide](tests/README.md). The default host command
-executes every behavior scenario once under ASan/UBSan. Set `ZMK_TEST_MODE=full`
-for all retained coverage/ABI variants. Legacy simulation has been removed
-from the active suite; its source/snapshots remain externally archived.
+Enable `CONFIG_ZMK_CUSTOM_SETTINGS`, `CONFIG_ZMK_CUSTOM_SETTINGS_STUDIO_RPC` and
+`CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS` with the Custom Settings module.
+Subsystem `amgskobo__padstick` publishes 15 values per node, using actual DTS node
+names such as `padstick.x_scale`. The shared registry owns persistence and
+initialization. Stock ZMK keeps the runtime API and DTS defaults without the
+DYA adapter. Key/storage-name overflow is rejected at build time.
+
+| Keys, independently for X/Y | Accepted live values |
+| --- | --- |
+| x_deadzone / y_deadzone; x_accel_range / y_accel_range; max_x / max_y | 0..32767 |
+| x_scale / y_scale; x_accel_scale / y_accel_scale | 0..4096, 256 = 1.0 |
+| x_center / y_center | INT32_MIN+1..INT32_MAX, excluding the unset sentinel |
+| invert_x / invert_y / fixed_center | Boolean |
+
+`padstick_get_params()` / `padstick_set_params()` use the public
+[runtime header](include/zmk-input-padstick/runtime.h). One node mutex serializes
+whole snapshots with events/repeats. Invalid sets leave live values/state
+unchanged; unchanged sets do not restart contacts. Changed sets stop later repeats
+and clear origins/remainders on every stream, then absorb a new settle frame.
+Contact/button edges remain transparent. A queued repeat retains its admission
+obligation until synchronized acknowledgement; an admitted X receives its missing
+Y even across a reset. Accepted reports cannot be retracted. Independent nodes retain independent values. The fixed 20 ms repeat
+cadence is not exposed as a setting.
+
+The readable subsystem ID `amgskobo__padstick` is also the persistence namespace.
+Values saved under the earlier local `amgskobo__stick` ID are not migrated or
+applied; re-enter values or update the exported subsystem ID before import.
+Existing storage is not erased. The build checks both key and complete storage
+name lengths, including the terminating byte.
