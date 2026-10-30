@@ -5,6 +5,9 @@
 [English](README.md)
 
 絶対座標を報告するトラックパッドを、小さなジョイスティックのようなポインティング面として使うための ZMK input processor です。
+導入・DTSの構成例は[英語ガイド](README.md#quick-start)を参照してください。
+
+## 接触と出力の責務
 
 元のボタンイベントは type/code/value/sync を保って後段へ渡します。
 独立した `zmk-input-suppress` を全経路の末尾に配置し、抑止方針、
@@ -18,7 +21,20 @@ PadStick は原点・端数・repeat の中止を所有します。
 初期化用座標は sync を保つ中立 MSC_SCAN になります。
 標準includeの `input_suppress` を経路末尾から直接mask引数で指定します。
 
-### 7. 複数input listener
+## 座標演算とリピート
+
+数値計算は非公開の `src/padstick_math.h`、接触・原点・繰り返し・レイヤー変更時の
+停止はドライバーが担当します。原点からの差分は減算前に範囲を検査し、方向への
+配分は商と余りへ分けてから乗算します。製品コードは64ビット演算を使わず、
+既存の入力範囲、丸め、端数、飽和を維持します。テストの独立した参照計算には
+64ビット整数を残します。
+
+保持方向の repeat は、保存済みの X/Y 座標対から距離を一度だけ計算し、両軸で共有します。
+平方根の結果を保存してから上限を適用するため、マクロによる二重評価もありません。
+各軸のデッドゾーン・倍率・反転・上限・端数は独立したままです。通常の ABS イベントは、
+従来どおり、その時点で最後に届いた相手軸の座標を使います。
+
+## 複数input listener
 
 1つのpadstick processor nodeを複数のinput listenerで共有できます。contact座標、
 origin、小数remainder、保持方向のrepeat work、元のinput device は
@@ -27,7 +43,10 @@ indexはログを出さずに変換せず通過し、stream 0へaliasしませ�
 
 ## Debug Logging
 
-Zephyr logging を有効にし、ZMK の log level を debug にすると、この processor の `LOG_DBG` 出力を有効にできます。たとえば ZMK 設定で `CONFIG_LOG=y` と `CONFIG_ZMK_LOG_LEVEL_DBG=y` を設定します。ログを見るには、USB logging、RTT、UART など、ZMK 側のログ出力 backend も必要です。USB CDC ACM logging を使う場合は `CONFIG_ZMK_USB_LOGGING=y` を使えます。
+`CONFIG_LOG=y` でZephyr loggingを有効にし、
+`CONFIG_ZMK_INPUT_PADSTICK_LOG_LEVEL=4` でこのmoduleの `LOG_DBG` 出力を含めます。
+このmoduleのログは専用のlog levelで制御します。
+ログを見るには、USB logging、RTT、UARTなどの出力backendも構成してください。
 
 debug log は初期化と継続接触の推定を記録し、繰り返し出力の入力キュー投入失敗は警告します。算術ヘルパーはログやカーネルに依存しません。
 
@@ -57,6 +76,19 @@ scale と accel scale は runtime で `0..4096` に clamp されます。deadzon
 この値は DTS のビルド時とデバイス初期化時にも、実行中の設定 API と同様に拒否されます。
 `INT32_MIN+1` から `INT32_MAX` までの中心座標は使用できます。
 
+## DYA Studio設定
+
+`CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS=y` をCustom Settings・Studio RPCと共に
+有効にすると、`amgskobo__padstick` に各ノード15項目を公開します。デッドゾーン、
+倍率、加速範囲、最大出力、中心、反転、固定中心を変更でき、保存は共通レジストリが担当します。
+変更時はリピートを止めて原点・端数を取り直し、キューに入った1組の処理は維持します。
+公開キー・範囲とAPIは[英語ガイド](README.md#dya-studio-settings)を参照してください。
+
+設定グループID `amgskobo__padstick` は保存先の識別子も兼ねます。旧ローカル版の
+`amgskobo__stick` からの自動移行は行いません。値を再設定するか、エクスポートした
+データのグループIDを更新してからインポートしてください。
+既存の保存領域は消去しません。キーと保存先全体の長さは終端文字も含めてビルド時に検査します。
+
 ## テスト
 
 ```sh
@@ -73,30 +105,9 @@ bash ./tests/run-integration-docker.sh dya
 レイヤ変更で原点が破棄されることを確認します。`upstream` はZMK `main`、`dya` はDYA ZMK forkを
 使います。GitHub Actions は pull request ごと、`main` への push、週次実行で両方を実行します。
 
-## License
-
-MIT License. 詳細は [LICENSE](LICENSE) を参照してください。
-
-
 nativeテストは実input queueへ送る繰返しペア、制御された確認応答、接触終了・待機中レイヤー変更も検証し、同じバイナリを3回実行します。
 実HID・無線の混雑試験とは分けています。詳細は [テストガイド](tests/README.md) を参照してください。
 
+## License
 
-## 責務とテストの分離
-
-数値計算は非公開の `src/padstick_math.h`、接触・原点・繰り返し・レイヤー変更時の停止はドライバーが担当します。元のボタンイベントと同期ビットは変更せず、最終段の共通フィルターが抑止を担当します。
-
-ホストテストは実際の算術ヘッダーとドライバー全体を別々に取り込みます。テスト用の構造体複製や関数抽出は行いません。詳細な確認範囲と旧アサーションの対応は [テストガイド](tests/README.md) を参照してください。
-
-## DYA Studio設定
-
-`CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS=y` をCustom Settings・Studio RPCと共に
-有効にすると、`amgskobo__padstick` に各ノード15項目を公開します。デッドゾーン、
-倍率、加速範囲、最大出力、中心、反転、固定中心を変更でき、保存は共通レジストリが担当します。
-変更時はリピートを止めて原点・端数を取り直し、キューに入った1組の処理は維持します。
-公開キー・範囲とAPIは[英語ガイド](README.md#dya-studio-settings)を参照してください。
-
-設定グループID `amgskobo__padstick` は保存先の識別子も兼ねます。旧ローカル版の
-`amgskobo__stick` からの自動移行は行いません。値を再設定するか、エクスポートした
-データのグループIDを更新してからインポートしてください。
-既存の保存領域は消去しません。キーと保存先全体の長さは終端文字も含めてビルド時に検査します。
+MIT License. 詳細は [LICENSE](LICENSE) を参照してください。

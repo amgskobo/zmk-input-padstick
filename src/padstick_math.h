@@ -26,19 +26,15 @@ static int32_t padstick_clamp_i32(int32_t value, int32_t min_value, int32_t max_
 
 /*
  * How far a coordinate is from its origin. Both are whatever the input device
- * reported, so the difference is taken wide and saturated rather than left to
+ * reported, so the difference is checked and saturated rather than left to
  * overflow when a source sends a value near the ends of the range.
  */
 static int32_t padstick_offset(int32_t value, int32_t origin) {
-	const int64_t offset = (int64_t)value - origin;
-
-	if (offset > INT32_MAX) {
-		return INT32_MAX;
+	int32_t offset;
+	if (__builtin_sub_overflow(value, origin, &offset)) {
+		return value > origin ? INT32_MAX : INT32_MIN;
 	}
-	if (offset < INT32_MIN) {
-		return INT32_MIN;
-	}
-	return (int32_t)offset;
+	return offset;
 }
 
 /*
@@ -104,20 +100,23 @@ static int32_t padstick_scale_distance(int32_t distance, int32_t accel_range, in
  * axes than when it all lands on one - so a diagonal push would come out slower
  * than a straight one, by a margin that grows with deflection.
  *
- * The distance costs one integer square root and the share one divide, per axis
- * event. Against the interval between reports that is not a meaningful fraction.
+ * Live axis events use the most recent partner coordinate. A repeat already
+ * has a complete stored pair, so both axes share its radial distance.
  */
-static int32_t padstick_apply_axis(int32_t value, int32_t origin, int32_t deadzone,
-				   int32_t scale, int32_t accel_range,
-				   int32_t accel_scale, int32_t max_value, bool invert,
-				   int32_t *remainder, int32_t other_delta) {
-	int32_t delta = padstick_offset(value, origin);
-	int32_t axis_distance = PADSTICK_MIN(padstick_abs_i32(delta), PADSTICK_DISTANCE_MAX);
-	uint32_t a = (uint32_t)axis_distance;
+static int32_t padstick_radial_distance(int32_t delta, int32_t other_delta) {
+	uint32_t a = (uint32_t)PADSTICK_MIN(padstick_abs_i32(delta), PADSTICK_DISTANCE_MAX);
 	uint32_t b = (uint32_t)PADSTICK_MIN(padstick_abs_i32(other_delta), PADSTICK_DISTANCE_MAX);
-	int32_t magnitude = (int32_t)PADSTICK_MIN(padstick_isqrt(a * a + b * b),
-					 (uint32_t)PADSTICK_DISTANCE_MAX);
-	int32_t reach = magnitude;
+	uint32_t distance = padstick_isqrt(a * a + b * b);
+	return (int32_t)PADSTICK_MIN(distance,
+				   (uint32_t)PADSTICK_DISTANCE_MAX);
+}
+
+static int32_t padstick_apply_delta(int32_t delta, int32_t reach, int32_t deadzone,
+				    int32_t scale, int32_t accel_range,
+				    int32_t accel_scale, int32_t max_value, bool invert,
+				    int32_t *remainder) {
+	int32_t axis_distance = PADSTICK_MIN(padstick_abs_i32(delta), PADSTICK_DISTANCE_MAX);
+	int32_t magnitude = reach;
 
 	deadzone = PADSTICK_MAX(deadzone, 0);
 	max_value = PADSTICK_MAX(max_value, 0);
@@ -133,7 +132,10 @@ static int32_t padstick_apply_axis(int32_t value, int32_t origin, int32_t deadzo
 
 	/* The nonpositive case returned above: deadzone >= 0 and reach > deadzone,
 	 * so this divisor cannot be zero. Share the step across both axes. */
-	scaled = (int32_t)(((int64_t)scaled * (int64_t)axis_distance) / (int64_t)reach);
+	/* Divide before multiplying. Both products fit: the whole gain is at
+	 * most SCALE_MAX, and the fractional factors are at most DISTANCE_MAX. */
+	scaled = (scaled / reach) * axis_distance +
+		 ((scaled % reach) * axis_distance) / reach;
 
 	if ((delta < 0) != invert) {
 		scaled = -scaled;
@@ -154,4 +156,13 @@ static int32_t padstick_apply_axis(int32_t value, int32_t origin, int32_t deadzo
 
 	*remainder = total - (output * PADSTICK_SCALE_ONE);
 	return output;
+}
+
+static int32_t padstick_apply_axis(int32_t value, int32_t origin, int32_t deadzone,
+				   int32_t scale, int32_t accel_range,
+				   int32_t accel_scale, int32_t max_value, bool invert,
+				   int32_t *remainder, int32_t other_delta) {
+	int32_t delta = padstick_offset(value, origin);
+	return padstick_apply_delta(delta, padstick_radial_distance(delta, other_delta),
+		deadzone, scale, accel_range, accel_scale, max_value, invert, remainder);
 }

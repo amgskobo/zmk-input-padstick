@@ -114,3 +114,13 @@ list, a cache symlink, module paths containing spaces, failed project discovery 
 an empty selection. The keep-ambient negative control must fail these assertions.
 Full integration retains all supported-core, role, persistence and invalid-DTS
 cases. No dependency is patched or required feature disabled.
+
+## 32-bit arithmetic and clock contract
+
+Coordinate offsets use checked 32-bit subtraction. Radial output distribution divides into whole and fractional parts before multiplication, preserving the existing bounds, signed remainder and report rounding without wide arithmetic.
+
+runtime/math_harness.c retains radial direction/ramp, full-coordinate extremes, fractions, inversion and saturation. The whole-driver fixtures remain unchanged.
+
+## Shared repeat distance
+
+The repeat worker calculates the radial distance once for its stored X/Y pair, then applies each axis's own deadzone, gain, limit, inversion and fraction. Live ABS events still use their most recent partner coordinate independently. tests/test_repeat_cost.py compiles the complete driver fixture with compiler function-entry instrumentation at O0/O2: exact asymmetric/reversed/zero/saturated pairs, stream selection, sync and one square-root entry per repeat. The old worker fails the count assertion. The canonical host entry includes it; this is an operation count, not a CPU-cycle or physical timing measurement.

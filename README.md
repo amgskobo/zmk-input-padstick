@@ -104,11 +104,29 @@ The distance from the origin is taken first, the ramp applied to that, and the r
 
 Reading each axis on its own would make the deadzone a square, and a ramp that rises with distance yields less when that distance is split between two axes than when it all lands on one - so a diagonal push would come out slower than a straight one, by a margin that grows with deflection.
 
-This is not configurable. The distance costs one integer square root and the share one divide, per axis event; measured against the interval between reports that is not a meaningful fraction, so there is nothing to trade away by making it optional. The square root is bit-by-bit, sixteen rounds of shifts and compares with no divide or multiply.
+Each live axis event computes one integer square root for the distance and a
+per-axis division for its share. The square root uses sixteen rounds of shifts
+and comparisons, with no division or multiplication.
 
-Because the axes arrive as separate events, the one that comes first reads its partner one sample behind - far below what a finger covers between reports.
+Axes arrive as separate events, so each live ABS event uses the most recent
+coordinate received for its partner axis.
+
+Held-direction repeat already has a stored coordinate pair, so it computes
+the radial distance once for both axes. The square-root result is saved before
+clamping, avoiding repeated evaluation by the clamp macro. Each axis retains
+its own deadzone, gain, inversion, limit and fractional remainder; live ABS
+events keep their per-event partner sampling.
 
 Both deadzones bound the same circular distance, so set `x-deadzone` and `y-deadzone` to the same value unless the pad's axes have different resolutions.
+
+### Arithmetic bounds
+
+Coordinate offsets use checked 32-bit subtraction. Radial output distribution
+splits values into whole and fractional parts before multiplication, preserving
+the existing bounds, signed remainder and report rounding without wide
+arithmetic. The [math and driver tests](tests/README.md) retain independent wide
+references for full-coordinate extremes, direction/ramp, fractions, inversion
+and saturation.
 
 ### 5. Sizing `max-x` / `max-y`
 
@@ -143,7 +161,10 @@ passed through without a log line and never aliases stream zero.
 
 ## Debug Logging
 
-Enable Zephyr logging and set ZMK's log level to debug to enable `LOG_DBG` output from this processor. For example, set `CONFIG_LOG=y` and `CONFIG_ZMK_LOG_LEVEL_DBG=y` in your ZMK config. Your build still needs a ZMK log backend, such as USB logging, RTT, or UART, to view the logs. `CONFIG_ZMK_USB_LOGGING=y` can be used when you want USB CDC ACM logging.
+Enable Zephyr logging with `CONFIG_LOG=y` and set this module's level to
+`CONFIG_ZMK_INPUT_PADSTICK_LOG_LEVEL=4` to include its `LOG_DBG` output. Your
+build also needs a configured logging backend, such as USB logging, RTT, or
+UART, to view the logs.
 
 Debug logs describe initialization and inferred continuing contacts. Failed repeat input reports produce warnings. The arithmetic helper has no logging or kernel dependency.
 
@@ -173,32 +194,6 @@ Scale and acceleration scale values are clamped to `0..4096` at runtime. Deadzon
 as either center. DTS instances reject it at build time, and initialization
 also rejects it, matching the live API. All values from `INT32_MIN+1` through
 `INT32_MAX` are valid.
-
-## Tests
-
-```sh
-bash ./tests/run-docker.sh
-bash ./tests/run-integration-docker.sh upstream
-bash ./tests/run-integration-docker.sh dya
-```
-
-The host suite includes the actual private arithmetic header and the complete
-unchanged production driver in separate fixtures. It runs every behavior under
-ASan/UBSan; full mode adds optimized and complete function/line/branch coverage
-checks. Test stand-ins provide Zephyr services without duplicating PadStick
-state layouts or exporting production functions. See [the ownership map](tests/README.md).
-
-Each integration variant builds an ARM firmware fixture in which two listeners
-share one node, then runs the same native binary three times. Native assertions
-cover independent contacts/origins, transparent button payloads and sync, layer
-resets, real input-queue repeat admission with controlled acknowledgements, and
-overdue work cancellation. These are kernel/API checks; physical HID/radio
-congestion and board timing require separate evidence.
-
-## License
-
-MIT License. See [LICENSE](LICENSE) for details.
-
 
 ## DYA Studio settings
 
@@ -231,3 +226,28 @@ Values saved under the earlier local `amgskobo__stick` ID are not migrated or
 applied; re-enter values or update the exported subsystem ID before import.
 Existing storage is not erased. The build checks both key and complete storage
 name lengths, including the terminating byte.
+
+## Tests
+
+```sh
+bash ./tests/run-docker.sh
+bash ./tests/run-integration-docker.sh upstream
+bash ./tests/run-integration-docker.sh dya
+```
+
+The host suite includes the actual private arithmetic header and the complete
+unchanged production driver in separate fixtures. It runs every behavior under
+ASan/UBSan; full mode adds optimized and complete function/line/branch coverage
+checks. Test stand-ins provide Zephyr services without duplicating PadStick
+state layouts or exporting production functions. See [the ownership map](tests/README.md).
+
+Each integration variant builds an ARM firmware fixture in which two listeners
+share one node, then runs the same native binary three times. Native assertions
+cover independent contacts/origins, transparent button payloads and sync, layer
+resets, real input-queue repeat admission with controlled acknowledgements, and
+overdue work cancellation. These are kernel/API checks; physical HID/radio
+congestion and board timing require separate evidence.
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.

@@ -200,18 +200,19 @@ static void padstick_repeat_work_handler(struct k_work *work) {
 		return;
 	}
 
-	int32_t other_x = padstick_offset(data->last_y, data->origin_y);
-	int32_t other_y = padstick_offset(data->last_x, data->origin_x);
-	int32_t rel_x = padstick_apply_axis(data->last_x, data->origin_x,
+	int32_t delta_x = padstick_offset(data->last_x, data->origin_x);
+	int32_t delta_y = padstick_offset(data->last_y, data->origin_y);
+	int32_t reach = padstick_radial_distance(delta_x, delta_y);
+	int32_t rel_x = padstick_apply_delta(delta_x, reach,
 					     config->x_deadzone, config->x_scale,
 					     config->x_accel_range, config->x_accel_scale,
 					     config->max_x, config->invert_x,
-					     &data->x_remainder, other_x);
-	int32_t rel_y = padstick_apply_axis(data->last_y, data->origin_y,
+					     &data->x_remainder);
+	int32_t rel_y = padstick_apply_delta(delta_y, reach,
 					     config->y_deadzone, config->y_scale,
 					     config->y_accel_range, config->y_accel_scale,
 					     config->max_y, config->invert_y,
-					     &data->y_remainder, other_y);
+					     &data->y_remainder);
 
 	/*
 	 * Return the synthesized REL pair to the original input device. Its input
