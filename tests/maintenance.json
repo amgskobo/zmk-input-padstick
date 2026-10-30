@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "owner": "zmk-input-padstick",
+  "supported_cores": [
+    "stock-zmk",
+    "dya"
+  ],
+  "unsupported_core_status": "NOT APPLICABLE",
+  "commands": [
+    "bash tests/run-docker.sh",
+    "bash tests/run.sh (inside the Linux build image); same behavioral and coverage/offline-admission entry used by Docker and CI",
+    "python3 -m unittest discover -s tests/integration -p test_*.py -v (inside the Linux build image)",
+    "Explicit offline integration: tests/integration/run.sh; see tests/README.md for pinned workspaces, variant selection and fresh outputs"
+  ],
+  "coverage_map": "tests/contract.json",
+  "boot_centers": "Complete-driver X/Y init regressions reject INT32_MIN; real-DTS guards require both named compile rejections and a valid signed-limit build on both cores. Before repair stationary input produces a maximum-axis step and both invalid DTS configurations compile. All previous runtime/motion assertions retained.",
+  "preserved_assertions": "All math/motion/native assertions retained; equivalent node-lock checks replace stream-lock checks. DYA now owns pinned archive admission and actual registry/NVS reload fixtures.",
+  "execution": {
+    "quick": "All behavioral scenarios once; sanitizer variants where supported.",
+    "full": "Same scenarios plus relevant optimization, ABI, role, kernel and supported-core checks.",
+    "outputs": "Use a fresh evidence directory; existing evidence is never overwritten."
+  },
+  "gaps": [
+    "Physical USB/BLE/split delivery, timing, power and retention require matching production-board evidence."
+  ],
+  "suppression_extraction": "Source KEY payload/sync stays unchanged; independent final filter owns button disposition and filtered-frame completion. Current ownership map: tests/README.md.",
+  "runtime_settings": "Whole-source adapter and driver fixtures; real API/overdue-work cancellation, DYA registry and three NVS reboot pairs; tests/README.md",
+  "scheduled_work_settings_review": "The bounded host FIFO and actual native input queue now force X admission / Y refusal. They verify retry-only-Y, no duplicate X, ordered completion and recovery across touch/layer/settings cancellation. The complete driver also tests synchronous callback reentry on either axis. X refusal now attempts no Y, so the existing failure case expects one warning/API attempt instead of two; all value/order and recovery assertions remain. The native fixture deliberately uses an eight-slot queue; this is API/kernel evidence, not physical HID congestion acceptance.",
+  "selected_workspace": "Workspace selection uses tests/integration/workspace-env.sh to export the selected manifest's ZEPHYR_MODULES and explicit Zephyr package/base paths. A Zephyr symlink to a different cache must not select that cache's module providers. The owner test_workspace_env.py exercises actual selection with a poisoned ambient list, a cache symlink, module paths containing spaces, failed project discovery and an empty selection. The keep-ambient negative control must fail these assertions. Full integration retains all supported-core, role, persistence and invalid-DTS cases. No dependency is patched or required feature disabled.",
+  "integer_width": {
+    "production": "32-bit arithmetic; independent wider oracles remain test-only",
+    "contract": "Coordinate offsets use checked 32-bit subtraction. Radial output distribution divides into whole and fractional parts before multiplication, preserving the existing bounds, signed remainder and report rounding without wide arithmetic.",
+    "fixtures": "runtime/math_harness.c retains radial direction/ramp, full-coordinate extremes, fractions, inversion and saturation. The whole-driver fixtures remain unchanged.",
+    "physical": "NOT RUN"
+  },
+  "arithmetic_fast_paths": {
+    "contract": "The repeat worker calculates the radial distance once for its stored X/Y pair, then applies each axis's own deadzone, gain, limit, inversion and fraction. Live ABS events still use their most recent partner coordinate independently. tests/test_repeat_cost.py compiles the complete driver fixture with compiler function-entry instrumentation at O0/O2: exact asymmetric/reversed/zero/saturated pairs, stream selection, sync and one square-root entry per repeat. The old worker fails the count assertion. The canonical host entry includes it; this is an operation count, not a CPU-cycle or physical timing measurement.",
+    "physical": "NOT RUN"
+  }
+}

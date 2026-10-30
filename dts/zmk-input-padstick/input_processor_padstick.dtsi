@@ -9,6 +9,6 @@
 		compatible = "zmk,input-processor-padstick";
 		status = "okay";
 		#input-processor-cells = <0>;
-		suppress-abs;
+
 	};
 };

@@ -5,140 +5,50 @@
 [English](README.md)
 
 絶対座標を報告するトラックパッドを、小さなジョイスティックのようなポインティング面として使うための ZMK input processor です。
+導入・DTSの構成例は[英語ガイド](README.md#quick-start)を参照してください。
 
-`zmk,input-processor-padstick` は、`INPUT_BTN_TOUCH` 後に最初に届いた完全な絶対座標レポートフレームを捨て、その後の絶対座標レポートを `INPUT_REL_X` / `INPUT_REL_Y` に変換します。デフォルトでは、その次に届いた `INPUT_ABS_X` と `INPUT_ABS_Y` を一時的なタッチ原点として保存します。`fixed-center` を有効にした場合は、設定した `x-center` / `y-center` 座標を原点として使います。接触中は padstick 自身が最新の変位を 20 ms ごとに再計算するため、入力元ドライバーに同一 ABS 座標を再送させずに、方向を保持したジョイスティック操作になります。
+## 接触と出力の責務
 
-## Features
+元のボタンイベントは type/code/value/sync を保って後段へ渡します。
+独立した [`zmk-input-suppress`](https://github.com/amgskobo/zmk-input-suppress) を全経路の末尾に配置し、抑止方針、
+押下と解放の履歴、同期境界を一か所で管理します。
+旧 `suppress-abs` / `suppress-btn-touch` / `suppress-btn0` は削除します。
+ボタンの履歴と解放義務は共通最終段が所有し、レイヤー変更でも維持します。
+PadStick は原点・端数・repeat の中止を所有します。
+入力キューに X だけが入った場合は、不足する同期付き Y だけを再送し、
+その組が完了するまで次の X を追加しません。指の解放・レイヤー変更・設定変更は
+以後の repeat を止めますが、受理済み X のフレーム終端は完了させます。
+初期化用座標は sync を保つ中立 MSC_SCAN になります。
+標準includeの `input_suppress` を経路末尾から直接mask引数で指定します。
 
-- **原点ベースの移動**: タッチした位置を一時的なジョイスティック中心として扱います。
-- **固定中心モード**: タッチ位置ではなく、設定したトラックパッド中心座標を使えます。
-- **デッドゾーン**: タッチ直後の座標ぶれをポインタ移動にしません。
-- **滑らかな加速**: 時間ではなく距離に応じて、低速用 scale から加速後 scale へ整数演算だけで滑らかに遷移します。
-- **半径応答**: 速度は押した方向ではなく指の距離だけで決まり、デッドゾーンは円になります。
-- **サブピクセル蓄積**: 軸ごとに小数相当の REL count を保持し、低感度でも小さな動きを捨てません。
-- **方向保持の再送**: 指が触れている間、最後に得た完全な座標組を 20 ms ごとに再処理します。周期は processor 固有の動作であり、DTS パラメータは追加しません。
-- **イベント抑制**: 変換後に元の ABS、`BTN_TOUCH`、`BTN_0` を必要に応じて消費できます。
-- **レイヤ変更に対して安全**: レイヤが変わると原点を破棄するため、2 つのチェーンに分割された接触が無関係な接触を基準に測られることがありません。
-- **分割キーボード対応**: split build では central 側だけで有効になります。
+## 座標演算とリピート
 
-## Installation
+数値計算は非公開の `src/padstick_math.h`、接触・原点・繰り返し・レイヤー変更時の
+停止はドライバーが担当します。原点からの差分は減算前に範囲を検査し、方向への
+配分は商と余りへ分けてから乗算します。製品コードは64ビット演算を使わず、
+既存の入力範囲、丸め、端数、飽和を維持します。テストの独立した参照計算には
+64ビット整数を残します。
 
-ZMK 設定リポジトリの `config/west.yml` に、このモジュールを追加してください。
+保持方向の repeat は、保存済みの X/Y 座標対から距離を一度だけ計算し、両軸で共有します。
+平方根の結果を保存してから上限を適用するため、マクロによる二重評価もありません。
+各軸のデッドゾーン・倍率・反転・上限・端数は独立したままです。通常の ABS イベントは、
+従来どおり、その時点で最後に届いた相手軸の座標を使います。
 
-```yaml
-manifest:
-  remotes:
-    - name: amgskobo
-      url-base: https://github.com/amgskobo
-  projects:
-    - name: zmk-input-padstick
-      remote: amgskobo
-      revision: main
-```
-
-## Quick Start
-
-### 1. DTS Include
-
-シールドの `.overlay` または `.zmk.dts` で標準ヘルパーを include します。
-
-```dts
-#include <zmk-input-padstick/input_processor_padstick.dtsi>
-```
-
-### 2. Configuration Example
-
-**Note**: DeviceTree で compatible が有効になると、`CONFIG_ZMK_POINTING` が有効な構成では Kconfig default により `CONFIG_ZMK_INPUT_PROCESSOR_PADSTICK` も自動的に有効になります。
-
-```dts
-/* padstick processor の設定 */
-&padstick {
-    x-deadzone = <48>;
-    y-deadzone = <48>;
-    x-scale = <8>;
-    y-scale = <8>;
-    x-accel-range = <464>;
-    y-accel-range = <464>;
-    x-accel-scale = <12>;
-    y-accel-scale = <12>;
-    max-x = <16>;
-    max-y = <16>;
-    fixed-center;
-    x-center = <512>;
-    y-center = <512>;
-    suppress-abs;
-    suppress-btn-touch;
-};
-
-/* トラックパッドの入力パイプラインへ padstick を追加 */
-&trackpad_listener {
-    input-processors = <&padstick>;
-};
-```
-
-デフォルト値は 1024 x 1024 の絶対座標トラックパッドを基準にしています。48 count の deadzone でタッチ原点周辺に小さな遊びを作り、中心から端までの残り約 464 count を滑らかな加速範囲として使います。
-
-### 3. Motion Semantics
-
-- `BTN_TOUCH` press でタッチ原点とサブピクセル remainder をリセットします。
-- touch 後の最初の完全な `ABS_X` / `ABS_Y` フレームは原点安定用として抑制します。
-- デフォルトのタッチ原点モードでは、その次の `ABS_X` と `ABS_Y` が原点座標になります。
-- `fixed-center` では、毎回 `x-center` と `y-center` が原点座標になります。両軸の原点は同時に確定します。どちらも接触に依存せず、半径の計算は最初のサンプルから両方を必要とするためです。
-- `x-deadzone` / `y-deadzone` 内の動きは 0 を出力し、その軸の remainder をクリアします。
-- deadzone 外の動きは fixed point scale で変換します。`256` が `1.0x` です。
-- 加速は `x-scale` / `y-scale` から `x-accel-scale` / `y-accel-scale` へ、`x-accel-range` / `y-accel-range` の距離内で滑らかに増えます。
-- 小数相当の出力は軸ごとに蓄積されます。たとえば `x-scale = <8>` の場合、deadzone 外の 1 count 入力が繰り返されると、32 回に 1 回 `REL_X = 1` が出ます。
-- 出力は `max-x` / `max-y` で clamp されます。飽和した場合、その軸の remainder はクリアされます。
-- 原点と座標組の両方が確定した後は、その変位を保持すると 20 ms ごとに次の REL 組を出力します。組は元の input device から注入されるため、listener の残りの processor chain も通常どおり適用されます。
-- 保持方向のrepeatはZephyrのsystem work queueではなくZMKのlow-priority work queueで実行し、連続出力がBluetooth、split、watchdog、device PMのsystem workを遅延させないようにします。
-- `BTN_TOUCH` release は、次の組を予約する前に pending repeat work を停止します。
-
-### 4. Radial Response
-
-先に原点からの距離を求めてランプを適用し、得られたステップを 2 軸の変位の比で配分します。したがって速度は指の移動距離だけで決まり、デッドゾーンは円になります。
-
-軸ごとに独立して読むとデッドゾーンは正方形になり、距離に応じて上がるランプはその距離が 2 軸に分かれるほど少ない値しか返さないため、斜めはまっすぐより遅くなります。差は変位が大きいほど広がります。
-
-これは設定できません。コストは軸イベントあたり整数平方根 1 回と除算 1 回で、レポート間隔に対して有意な割合にならないことを実測で確認しているため、任意化して引き換えにするものがありません。平方根はビット単位で、除算も乗算も使わない 16 回のシフトと比較で求めます。
-
-2 軸は別々のイベントとして届くため、先に来た軸は相方を 1 サンプル前の値で読みます。これは指がレポート間隔で動く量よりはるかに小さい差です。
-
-両方のデッドゾーンは同じ円の距離を区切ります。パッドの軸ごとに解像度が違う場合を除き、`x-deadzone` と `y-deadzone` は同じ値にしてください。
-
-### 5. `max-x` / `max-y` の決め方
-
-ある移動量に対するステップはランプ下の面積になるため、`x-accel-range` の外端での出力は次式になります。
-
-```text
-max = range * (scale + accel-scale) / 2 / 256
-```
-
-`max-x` / `max-y` をこの値にすると、使用範囲の端でちょうど飽和します。小さくすると端の方が平坦になり、大きくすると端でも最高速度に届きません。
-
-clamp は軸ごとに効くため、動作点ではなく安全上限として働きます。全変位の斜め入力では 1 軸あたりおよそ 0.71 のステップが乗ります。
-
-### 6. レイヤ変更時の挙動
-
-どのプロセッサが動作するかは、そのイベント時点で有効なレイヤから都度決定されるため、1 つの接触が 2 つのチェーンに分割されることがあります。対策がないと、接触の移った先のインスタンスは以前のタッチで取った原点を保持したままで、最初のサンプルを**無関係な 2 つの接触の間の距離**として扱ってしまいます。
-
-そのため `zmk_layer_state_changed` を直接購読します。レイヤ変更時は方向保持の repeat を停止し、原点とサブピクセル remainder を破棄します。次の接触はタッチ開始時と同様に原点安定用フレームから始まります。保存済みの変位を新しい processor chain へ注入しないための、意図的に保守的な扱いです。
-
-指が触れたままレイヤ変更で Padstick が選ばれた場合、`BTN_TOUCH` press は前の chain に届いているため、この processor には見えません。この場合は安定化フレームの後、同期済みの完全な座標フレームを 2 回確認してから継続中の接触と判断し、方向保持 repeat を再開します。release 後に残る座標組 1 回だけでは repeat worker を再開しません。
-
-`suppress-btn0` は、**ここで抑制していない押下に対応する `BTN_0` の release は決して破棄しません**。release を通すことは常に安全（対応する押下は既にホストへ届いている）ですが、破棄するとそのボタンが押しっぱなしのまま解放手段を失います。この記録もレイヤ変更時にクリアされます。
-
-### 7. 複数input listener
+## 複数input listener
 
 1つのpadstick processor nodeを複数のinput listenerで共有できます。contact座標、
-origin、小数remainder、保持方向のrepeat work、元のinput device、button抑制状態は
+origin、小数remainder、保持方向のrepeat work、元のinput device は
 `input_device_index`ごとに独立します。設定値はnode全体で共有します。不正なruntime
 indexはログを出さずに変換せず通過し、stream 0へaliasしません。
 
 ## Debug Logging
 
-Zephyr logging を有効にし、ZMK の log level を debug にすると、この processor の `LOG_DBG` 出力を有効にできます。たとえば ZMK 設定で `CONFIG_LOG=y` と `CONFIG_ZMK_LOG_LEVEL_DBG=y` を設定します。ログを見るには、USB logging、RTT、UART など、ZMK 側のログ出力 backend も必要です。USB CDC ACM logging を使う場合は `CONFIG_ZMK_USB_LOGGING=y` を使えます。
+`CONFIG_LOG=y` でZephyr loggingを有効にし、
+`CONFIG_ZMK_INPUT_PADSTICK_LOG_LEVEL=4` でこのmoduleの `LOG_DBG` 出力を含めます。
+このmoduleのログは専用のlog levelで制御します。
+ログを見るには、USB logging、RTT、UARTなどの出力backendも構成してください。
 
-debug log には、touch reset、保存された原点座標、raw ABS 座標、原点からの delta、deadzone 後の magnitude、fixed-point scaled 値、入力/出力 remainder、生成された REL 出力、飽和、抑制された入力イベントが含まれます。
+debug log は初期化と継続接触の推定を記録し、繰り返し出力の入力キュー投入失敗は警告します。算術ヘルパーはログやカーネルに依存しません。
 
 ## Configuration Reference
 
@@ -159,24 +69,44 @@ debug log には、touch reset、保存された原点座標、raw ABS 座標、
 | `invert-x` | bool | false | 生成する `REL_X` の方向を反転します。 |
 | `invert-y` | bool | false | 生成する `REL_Y` の方向を反転します。 |
 | `fixed-center` | bool | false | タッチ位置ではなく `x-center` と `y-center` をジョイスティック原点として使います。 |
-| `suppress-abs` | bool | false | 変換されなかった ABS event を消費し、後段へ流さないようにします。 |
-| `suppress-btn-touch` | bool | false | contact state として使った後の `BTN_TOUCH` event を消費します。 |
-| `suppress-btn0` | bool | false | トラックパッドが物理クリックとして報告する `BTN_0` event を消費します。 |
 
 scale と accel scale は runtime で `0..4096` に clamp されます。deadzone と max は負にならないように補正されます。
+
+`INT32_MIN` は内部の未設定座標として予約されているため、X・Y の中心には使えません。
+この値は DTS のビルド時とデバイス初期化時にも、実行中の設定 API と同様に拒否されます。
+`INT32_MIN+1` から `INT32_MAX` までの中心座標は使用できます。
+
+## DYA Studio設定
+
+`CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS=y` を[Custom Settings](https://github.com/cormoran/zmk-feature-custom-settings)・Studio RPCと共に
+有効にすると、`amgskobo__padstick` に各ノード15項目を公開します。デッドゾーン、
+倍率、加速範囲、最大出力、中心、反転、固定中心を変更でき、保存は共通レジストリが担当します。
+変更時はリピートを止めて原点・端数を取り直し、キューに入った1組の処理は維持します。
+公開キー・範囲とAPIは[英語ガイド](README.md#dya-studio-settings)を参照してください。
+
+設定グループID `amgskobo__padstick` は保存先の識別子も兼ねます。旧ローカル版の
+`amgskobo__stick` からの自動移行は行いません。値を再設定するか、エクスポートした
+データのグループIDを更新してからインポートしてください。
+既存の保存領域は消去しません。キーと保存先全体の長さは終端文字も含めてビルド時に検査します。
 
 ## テスト
 
 ```sh
+bash ./tests/run-docker.sh
 bash ./tests/run-integration-docker.sh upstream
 bash ./tests/run-integration-docker.sh dya
 ```
 
+ホストテストは実際の非公開算術ヘッダーとドライバー全体を別々に取り込み、全ケースをASan/UBSanで実行します。fullモードでは最適化版と関数・行・分岐の完全な計測も実行します。テスト用の構造体複製や関数抽出は行いません。算術6関数とドライバー12関数をそれぞれ独立に確認します。
+
 各variantで、2つのinput listenerが1つのpadstick nodeを共有するファームウェアfixtureをビルドし、
 そのZMKでnative_simのself-testを実行します。範囲外のlistener indexが変更されずに通過すること、
-2つのlistenerが互いの接触状態を上書きしないこと、`BTN_0` の抑制がlistenerごとに対になること、
+2つのlistenerが互いの接触状態を上書きしないこと、元のボタンがlistenerごとに透過すること、
 レイヤ変更で原点が破棄されることを確認します。`upstream` はZMK `main`、`dya` はDYA ZMK forkを
-使います。GitHub Actions は pull request ごとと `main` への push で両方を実行します。
+使います。GitHub Actions は pull request ごと、`main` への push、週次実行で両方を実行します。
+
+nativeテストは実input queueへ送る繰返しペア、制御された確認応答、接触終了・待機中レイヤー変更も検証し、同じバイナリを3回実行します。
+実HID・無線の混雑試験とは分けています。詳細は [テストガイド](tests/README.md) を参照してください。
 
 ## License
 

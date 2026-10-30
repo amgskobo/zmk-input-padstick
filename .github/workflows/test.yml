@@ -20,7 +20,17 @@ concurrency:
   group: test-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
+env:
+  ZMK_TEST_MODE: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'full' || 'quick' }}
+
 jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Exercise the PadStick driver with full line and branch coverage
+        run: bash ./tests/run-docker.sh
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 45
