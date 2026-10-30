@@ -10,7 +10,7 @@
 ## 接触と出力の責務
 
 元のボタンイベントは type/code/value/sync を保って後段へ渡します。
-独立した `zmk-input-suppress` を全経路の末尾に配置し、抑止方針、
+独立した [`zmk-input-suppress`](https://github.com/amgskobo/zmk-input-suppress) を全経路の末尾に配置し、抑止方針、
 押下と解放の履歴、同期境界を一か所で管理します。
 旧 `suppress-abs` / `suppress-btn-touch` / `suppress-btn0` は削除します。
 ボタンの履歴と解放義務は共通最終段が所有し、レイヤー変更でも維持します。
@@ -78,7 +78,7 @@ scale と accel scale は runtime で `0..4096` に clamp されます。deadzon
 
 ## DYA Studio設定
 
-`CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS=y` をCustom Settings・Studio RPCと共に
+`CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS=y` を[Custom Settings](https://github.com/cormoran/zmk-feature-custom-settings)・Studio RPCと共に
 有効にすると、`amgskobo__padstick` に各ノード15項目を公開します。デッドゾーン、
 倍率、加速範囲、最大出力、中心、反転、固定中心を変更でき、保存は共通レジストリが担当します。
 変更時はリピートを止めて原点・端数を取り直し、キューに入った1組の処理は維持します。

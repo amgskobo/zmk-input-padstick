@@ -7,7 +7,7 @@
 A ZMK input processor for using an absolute-reporting trackpad as a small joystick-style pointing surface.
 
 All original button events pass unchanged. Append an independent
-`zmk-input-suppress` instance to every selected listener route; it owns button
+[`zmk-input-suppress`](https://github.com/amgskobo/zmk-input-suppress) instance to every selected listener route; it owns button
 policy, release disposition and report boundaries. Remove the former
 `suppress-abs`, `suppress-btn-touch` and `suppress-btn0` properties.
 
@@ -198,7 +198,7 @@ also rejects it, matching the live API. All values from `INT32_MIN+1` through
 ## DYA Studio settings
 
 Enable `CONFIG_ZMK_CUSTOM_SETTINGS`, `CONFIG_ZMK_CUSTOM_SETTINGS_STUDIO_RPC` and
-`CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS` with the Custom Settings module.
+`CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS` with the [Custom Settings](https://github.com/cormoran/zmk-feature-custom-settings) module.
 Subsystem `amgskobo__padstick` publishes 15 values per node, using actual DTS node
 names such as `padstick.x_scale`. The shared registry owns persistence and
 initialization. Stock ZMK keeps the runtime API and DTS defaults without the
