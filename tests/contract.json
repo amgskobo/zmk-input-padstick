@@ -68,5 +68,12 @@
   "arithmetic_fast_paths": {
     "contract": "The repeat worker calculates the radial distance once for its stored X/Y pair, then applies each axis's own deadzone, gain, limit, inversion and fraction. Live ABS events still use their most recent partner coordinate independently. tests/test_repeat_cost.py compiles the complete driver fixture with compiler function-entry instrumentation at O0/O2: exact asymmetric/reversed/zero/saturated pairs, stream selection, sync and one square-root entry per repeat. The old worker fails the count assertion. The canonical host entry includes it; this is an operation count, not a CPU-cycle or physical timing measurement.",
     "physical": "NOT RUN"
+  },
+  "repeat_regressions": {
+    "host": "tests/runtime/driver_harness.c; tests/check_repeat_regressions.py",
+    "kernel": "tests/integration/module/src/runtime_test.c",
+    "contract": "Quiet fractional progress; deadzone/zero-gain stop; fully queued ownership across reset, source isolation, route-independent raw-Y acknowledgement and no late double acknowledgement",
+    "negative": "Unmodified prior driver must fail both named behavioral assertions",
+    "limits": "Real queues/API plus controlled callbacks; no physical HID/sensor acceptance"
   }
 }

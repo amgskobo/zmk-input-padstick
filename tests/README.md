@@ -17,7 +17,7 @@ ZMK_TEST_OFFLINE_WORKSPACE=/resolved/workspace ZMK_TEST_OUTPUT=/fresh/integratio
 | --- | --- |
 | Pure math | runtime/math_harness.c includes actual private padstick_math.h: radial distance/ramp, integer extremes, inversion, signed fractions and saturation |
 | Complete production driver | runtime/driver_harness.c includes actual driver/config/state/API/instance: independent streams, settle/touch/fixed origins, remainder, inferred contact, repeat admission/error/recovery and layer/touch cancellation |
-| Real kernel/API | integration/module/src/runtime_test.c: actual device/layer dispatcher; invalid stream, source transparency, independent contacts, one actual input pair in flight with controlled acknowledgements, overdue touch/layer cancellation; same binary3 times per core |
+| Real kernel/API | integration/module/src/runtime_test.c: actual device/layer dispatcher; invalid stream, source transparency, independent contacts, one actual input pair in flight with a controlled raw-Y dequeue, overdue touch/layer cancellation; same binary3 times per core |
 | Firmware | integration/run.sh: two listeners share one node; ARM registration on unchanged stock/DYA, required low-priority work queue and no module warnings |
 | Test admission | test_runtime_coverage.py: actual full entry plus direct controls reject empty/unrelated/partial/zero-function/missed line/branch reports |
 | Offline/output safety | integration/test_offline.py and test_output_guard.py: exact clean pins, safe project/output/symlink layout, fresh output and no west calls on rejection; pinned Custom Settings archive/digest admission on DYA |
@@ -124,3 +124,32 @@ runtime/math_harness.c retains radial direction/ramp, full-coordinate extremes, 
 ## Shared repeat distance
 
 The repeat worker calculates the radial distance once for its stored X/Y pair, then applies each axis's own deadzone, gain, limit, inversion and fraction. Live ABS events still use their most recent partner coordinate independently. tests/test_repeat_cost.py compiles the complete driver fixture with compiler function-entry instrumentation at O0/O2: exact asymmetric/reversed/zero/saturated pairs, stream selection, sync and one square-root entry per repeat. The old worker fails the count assertion. The canonical host entry includes it; this is an operation count, not a CPU-cycle or physical timing measurement.
+
+## Quiet motion and queued-pair resets
+
+The complete driver fixture keeps a fixed-center deflection one count past the
+deadzone without further ABS frames. Fractional X-only and Y-only movement must
+reach one count after 31 repeat ticks; deadzone and zero-gain cases must stop.
+A fully queued pair retains admission across touch/layer/settings resets, while
+an unrelated source remains independent. Its raw synchronized Y retires it even
+when the current route bypasses PadStick. A late processor call for that old Y
+must leave a newer pair in flight. The former touch-reset assertion that forgot
+queued ownership is replaced by preservation followed by an explicit dequeue;
+all original motion, partial-admission and transparent-button cases remain.
+
+The native fixture pauses the input callback before acknowledgement, tests the
+same fully queued reset with real input/work queues, and requires quiet fractional
+movement within the 20ms cadence plus the configured tick rounding. Native
+controlled acknowledgements now gate raw dequeue rather than injecting a REL
+call into a selected processor. These are kernel/API boundaries, not physical
+HID congestion or sensor timing evidence.
+
+```sh
+python3 tests/check_repeat_regressions.py --baseline-revision PRIOR_COMMIT \
+  --output FRESH_OUTPUT
+```
+
+This compiles the same owner assertions with the current and unmodified prior
+driver; both prior fractional-hold and queued-reset cases must fail at their
+named behavioral assertions. Production callback order is checked in linked
+native and firmware symbols: the raw observer precedes ZMK input handlers.

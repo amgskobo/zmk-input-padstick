@@ -86,6 +86,9 @@ if [ "$variant" = dya ]; then
 else
     ! grep -q '^CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS=y' "$firmware_dir/zephyr/.config"
 fi
+nm_tool="$(sed -n 's/^CMAKE_NM:FILEPATH=//p' "$firmware_dir/CMakeCache.txt")"
+"$nm_tool" --defined-only "$firmware_dir/zephyr/zmk.elf" >"$firmware_dir/repeat-symbols.txt"
+python3 /src/tests/integration/check-repeat-callback.py "$firmware_dir/repeat-symbols.txt"
 echo "PASS: $variant firmware fixture"
 
 ZMK_TEST_OUTPUT="$work_dir/guards" bash /src/tests/integration/guards/run.sh "$workspace"

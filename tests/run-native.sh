@@ -25,6 +25,9 @@ west build -p=always -o=-j2 -s "$workspace/zmk/app" -d "$output" \
   -b native_sim//zmk_test_mock -- -DCONFIG_ASSERT=y \
   -DZMK_CONFIG="$repo/tests/integration/runtime" \
   -DZMK_EXTRA_MODULES="$repo;$repo/tests/integration/module" "${cmake_args[@]}" >"$output.build.log" 2>&1
+nm_tool="$(sed -n 's/^CMAKE_NM:FILEPATH=//p' "$output/CMakeCache.txt")"
+"$nm_tool" --defined-only "$output/zephyr/zmk.exe" >"$output/repeat-symbols.txt"
+python3 "$repo/tests/integration/check-repeat-callback.py" "$output/repeat-symbols.txt"
 for run in 1 2 3; do
   flash=()
   if [ "${ZMK_TEST_CUSTOM_SETTINGS:-0}" = 1 ]; then flash=("--flash=$output.flash-$run.bin"); fi
