@@ -12,6 +12,10 @@
 
 typedef struct { int64_t ms; } k_timeout_t;
 struct k_mutex { int depth; };
+struct k_spinlock { int depth; };
+typedef int k_spinlock_key_t;
+static __attribute__((unused)) k_spinlock_key_t k_spin_lock(struct k_spinlock *lock) { assert(lock->depth++ == 0); return 0; }
+static __attribute__((unused)) void k_spin_unlock(struct k_spinlock *lock, k_spinlock_key_t key) { (void)key; assert(--lock->depth == 0); }
 struct k_work { void (*handler)(struct k_work *work); };
 struct k_work_delayable { struct k_work work; bool scheduled; int64_t delay_ms; };
 struct k_work_q { int unused; };
@@ -58,6 +62,8 @@ struct zmk_input_processor_state { uint8_t input_device_index; };
 #define LOG_MODULE_REGISTER(...)
 #define ZMK_LISTENER(name,callback) static int (*name)(const zmk_event_t *) __attribute__((used))=callback
 #define ZMK_SUBSCRIPTION(...)
+#define INPUT_CALLBACK_DEFINE_NAMED(dev, callback, user, name) \
+    static void (*raw_repeat_ack)(struct input_event *, void *) = callback
 struct zmk_input_processor_driver_api {
  int (*handle_event)(const struct device *,struct input_event *,uint32_t,uint32_t,
                      struct zmk_input_processor_state *);
@@ -111,6 +117,7 @@ static struct input_event fifo[8];
 static unsigned fifo_count, accepted_x, accepted_y;
 static int32_t refused_y;
 
+static void (*raw_repeat_ack)(struct input_event *, void *);
 static int padstick_handle_event(const struct device *dev, struct input_event *event,
                                  uint32_t param1, uint32_t param2,
                                  struct zmk_input_processor_state *state);
@@ -139,6 +146,7 @@ static int input_report_rel(const struct device *dev, uint16_t code, int32_t val
     if (report_result == 0 && listener_takes_pair) {
         struct input_event event = {.dev = dev, .sync = sync, .type = INPUT_EV_REL, .code = code,
                                     .value = value};
+        if (raw_repeat_ack) { raw_repeat_ack(&event, NULL); }
         assert(padstick_handle_event(&processor, &event, 0, 0, NULL) == 0);
         if(during_repeat_report) { during_repeat_report(code); }
     }
@@ -155,6 +163,7 @@ static int send(struct zmk_input_processor_state *state, uint8_t type, uint16_t 
                 int32_t value, bool sync) {
     struct input_event event = {.dev = &pad, .sync = sync, .type = type, .code = code,
                                 .value = value};
+    if (raw_repeat_ack) { raw_repeat_ack(&event, NULL); }
     const int ret = padstick_handle_event(&processor, &event, 0, 0, state);
     assert(ret == ZMK_INPUT_PROC_CONTINUE);
     assert(event.sync == sync);
@@ -286,7 +295,9 @@ static void test_contact_steps(void) {
     /* Diagonal: each axis is given the other's offset from the origin. The
      * math itself is checked in the math harness; here it is the oracle. */
     assert(touch(NULL, false) == ZMK_INPUT_PROC_CONTINUE);
-    /* A touch edge starts the contact over with nothing in flight. */
+    /* The queued pair survives the edge until its raw Y drains. */
+    assert(stream(0)->repeat_in_flight);
+    assert(send(NULL, INPUT_EV_REL, INPUT_REL_Y, 1, true) == 0);
     assert(!stream(0)->repeat_in_flight);
     start_contact(500, 500);
     const struct padstick_params *cfg = processor.config;
@@ -631,6 +642,7 @@ static void test_partial_repeat_admission(void) {
         fifo_enabled=false;
         for(unsigned i=0;i<fifo_count;i++) {
             struct input_event event=fifo[i];
+            if (raw_repeat_ack) { raw_repeat_ack(&event, NULL); }
             assert(padstick_handle_event(&processor,&event,0,0,NULL)==0);
         }
         assert(!stream(0)->repeat_in_flight);
@@ -640,6 +652,109 @@ static void test_partial_repeat_admission(void) {
     }
     reports=warnings=0;
     puts("padstick partial FIFO admission, reset cancellation and recovery: PASS");
+}
+
+static void test_fractional_hold(void) {
+    struct padstick_params original = owner.params, p = original;
+    p.fixed_center = true; p.x_center = p.y_center = 512;
+    p.x_deadzone = p.y_deadzone = 80; p.x_scale = p.y_scale = 8;
+    p.x_accel_range = p.y_accel_range = 432;
+    p.x_accel_scale = p.y_accel_scale = 39; p.max_x = p.max_y = 39;
+    assert(padstick_set_params(&processor, &p) == 0);
+    touch(NULL, true);
+    axis(NULL, INPUT_ABS_X, 593, false); axis(NULL, INPUT_ABS_Y, 512, true);
+    assert(axis(NULL, INPUT_ABS_X, 593, false) == 0);
+    assert(axis(NULL, INPUT_ABS_Y, 512, true) == 0);
+    reports = 0;
+    for (int tick = 1; tick <= 31; tick++) {
+        assert(stream(0)->repeat_work.scheduled && "fractional held motion lost its timer");
+        assert(stream(0)->repeat_work.delay_ms == 20);
+        run_repeat(0);
+        if (tick < 31) { assert(reports == 0); }
+    }
+    assert(reports == 2 && reported[0] == 1 && reported[1] == 0);
+    touch(NULL, true);
+    axis(NULL, INPUT_ABS_X, 512, false); axis(NULL, INPUT_ABS_Y, 593, true);
+    axis(NULL, INPUT_ABS_X, 512, false); axis(NULL, INPUT_ABS_Y, 593, true);
+    for (int tick = 1; tick <= 31; tick++) {
+        assert(stream(0)->repeat_work.scheduled); run_repeat(0);
+    }
+    assert(reports == 4 && reported[0] == 0 && reported[1] == 1);
+    /* An old fraction at a zero-gain/deadzone position must not spin forever. */
+    axis(NULL, INPUT_ABS_X, 512, false); axis(NULL, INPUT_ABS_Y, 512, true);
+    stream(0)->x_remainder = 7;
+    run_repeat(0);
+    if (stream(0)->repeat_work.scheduled) { run_repeat(0); }
+    assert(!stream(0)->repeat_work.scheduled);
+    p.x_scale = p.x_accel_scale = 0;
+    assert(padstick_set_params(&processor, &p) == 0);
+    touch(NULL, true);
+    axis(NULL, INPUT_ABS_X, 593, false); axis(NULL, INPUT_ABS_Y, 512, true);
+    axis(NULL, INPUT_ABS_X, 593, false); axis(NULL, INPUT_ABS_Y, 512, true);
+    stream(0)->x_remainder = 7;
+    run_repeat(0);
+    if (stream(0)->repeat_work.scheduled) { run_repeat(0); }
+    assert(!stream(0)->repeat_work.scheduled);
+    touch(NULL, false);
+    assert(padstick_set_params(&processor, &original) == 0);
+    assert(padstick_init(&processor) == 0);
+    reports = 0;
+    puts("padstick fractional quiet hold and zero-motion stop: PASS");
+}
+
+#ifndef PADSTICK_REVIEW_PRE_FIX
+static void test_repeat_sources(void) {
+    assert(padstick_init(&processor) == 0);
+    struct device other = {.name = "other"};
+    stream(0)->repeat_in_flight = true; stream(0)->repeat_dev = &other;
+    start_contact(500, 500);
+    axis(NULL, INPUT_ABS_X, 900, false); axis(NULL, INPUT_ABS_Y, 800, true);
+    /* Another physical source may make progress while the first is blocked. */
+    assert(stream(0)->repeat_in_flight);
+    struct padstick_stream *b = stream(1);
+    b->input_dev = &pad;
+    assert(padstick_admit_repeat(b));
+    padstick_retire_repeat(b);
+    struct input_event incomplete = {.dev = &other, .type = INPUT_EV_REL, .code = INPUT_REL_Y};
+    if (raw_repeat_ack) { raw_repeat_ack(&incomplete, NULL); }
+    assert(stream(0)->repeat_in_flight);
+    incomplete.sync = true; if (raw_repeat_ack) { raw_repeat_ack(&incomplete, NULL); }
+    assert(!stream(0)->repeat_in_flight);
+    assert(padstick_init(&processor) == 0);
+}
+
+#endif
+
+static void test_complete_pair_reset(void) {
+    for (unsigned reset = 0; reset < 3; reset++) {
+        assert(padstick_init(&processor) == 0); start_contact(500, 500);
+        axis(NULL, INPUT_ABS_X, 900, false); axis(NULL, INPUT_ABS_Y, 800, true);
+        listener_takes_pair = false; reports = 0; run_repeat(0);
+        assert(reports == 2 && stream(0)->repeat_in_flight);
+        if (reset == 0) { touch(NULL, true); }
+        if (reset == 1) { const zmk_event_t ev = {1}; padstick_layer_listener(&ev); }
+        if (reset == 2) { struct padstick_params p = owner.params; p.invert_y = !p.invert_y;
+            assert(padstick_set_params(&processor, &p) == 0); }
+        assert(stream(0)->repeat_in_flight && "reset forgot a fully queued pair");
+        start_contact(500, 500);
+        axis(NULL, INPUT_ABS_X, 900, false); axis(NULL, INPUT_ABS_Y, 800, true);
+        run_repeat(0); assert(reports == 2);
+        /* Drain raw Y while the processor is absent from the selected route. */
+        struct input_event y = {.dev = &pad, .type = INPUT_EV_REL, .code = INPUT_REL_Y, .sync = true};
+        struct device unrelated = {0}; y.dev = &unrelated;
+        if (raw_repeat_ack) { raw_repeat_ack(&y, NULL); }
+        assert(stream(0)->repeat_in_flight);
+        y.dev = &pad; if (raw_repeat_ack) { raw_repeat_ack(&y, NULL); }
+        assert(!stream(0)->repeat_in_flight && "bypassed route failed to retire its old pair");
+        run_repeat(0); assert(reports == 4 && stream(0)->repeat_in_flight);
+        /* The late processor invocation of old Y must not retire the new pair. */
+        assert(padstick_handle_event(&processor, &y, 0, 0, NULL) == 0);
+        assert(stream(0)->repeat_in_flight);
+        if (raw_repeat_ack) { raw_repeat_ack(&y, NULL); }
+        listener_takes_pair = true; touch(NULL, false);
+    }
+    assert(padstick_init(&processor) == 0); reports = 0;
+    puts("padstick fully queued reset, route bypass and late acknowledgement: PASS");
 }
 
 static void test_boot_center(struct padstick_params *config, bool x) {
@@ -694,6 +809,12 @@ int main(void) {
             test_unmatched_touch_release(&config);
             return 0;
         }
+        if (strcmp(selected, "fractional-hold") == 0 || strcmp(selected, "queued-reset") == 0) {
+            assert(padstick_init(&processor) == 0);
+            if (strcmp(selected, "fractional-hold") == 0) { test_fractional_hold(); }
+            else { test_complete_pair_reset(); }
+            return 0;
+        }
         assert(!"unknown PadStick test case");
     }
 
@@ -705,6 +826,11 @@ int main(void) {
     test_runtime_params();
     test_synchronous_repeat_reset();
     test_partial_repeat_admission();
+    test_fractional_hold();
+#ifndef PADSTICK_REVIEW_PRE_FIX
+    test_repeat_sources();
+#endif
+    test_complete_pair_reset();
     test_contact_steps();
     test_partial_frames();
     test_inferred_contact();

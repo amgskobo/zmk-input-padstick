@@ -194,6 +194,18 @@ struct repeat_sample {
 };
 static struct repeat_sample samples[16];
 static atomic_t sample_count;
+static atomic_t hold_pair;
+static atomic_t admitted_events;
+K_SEM_DEFINE(pair_blocked, 0, 1);
+K_SEM_DEFINE(pair_resume, 0, 1);
+
+int __real_input_report(const struct device *, uint8_t, uint16_t, int32_t, bool, k_timeout_t);
+int __wrap_input_report(const struct device *dev, uint8_t type, uint16_t code,
+                        int32_t value, bool sync, k_timeout_t timeout) {
+    int ret = __real_input_report(dev, type, code, value, sync, timeout);
+    if (ret == 0 && dev == repeat_sink && type == INPUT_EV_REL) { atomic_inc(&admitted_events); }
+    return ret;
+}
 K_SEM_DEFINE(repeat_blocked, 0, 1);
 K_SEM_DEFINE(repeat_resume, 0, 1);
 K_SEM_DEFINE(repeat_drained, 0, 1);
@@ -218,8 +230,14 @@ static void capture_repeat(struct input_event *event, void *unused) {
     __ASSERT_NO_MSG(n < ARRAY_SIZE(samples));
     samples[n] = (struct repeat_sample){event->code, event->value, event->sync, k_uptime_get()};
     atomic_inc(&sample_count);
+    if (event->code == INPUT_REL_Y && event->sync && atomic_cas(&hold_pair, 1, 0)) {
+        k_sem_give(&pair_blocked);
+        __ASSERT_NO_MSG(k_sem_take(&pair_resume, K_SECONDS(1)) == 0);
+    }
 }
-INPUT_CALLBACK_DEFINE(DEVICE_DT_GET(DT_NODELABEL(repeat_sink)), capture_repeat, NULL);
+/* Pause before the production raw acknowledgement; ZMK listeners run later. */
+INPUT_CALLBACK_DEFINE_NAMED(DEVICE_DT_GET(DT_NODELABEL(repeat_sink)), capture_repeat, NULL,
+                            a0_padstick_capture);
 
 static void block_repeat(struct k_work *work) {
     ARG_UNUSED(work);
@@ -235,6 +253,7 @@ K_WORK_DEFINE(repeat_barrier, repeat_fence);
 
 static void begin_repeat(void) {
     atomic_set(&sample_count, 0);
+    atomic_set(&admitted_events, 0);
     event_source = repeat_sink;
     touch(STREAM_A, true);
     consumed_frame(STREAM_A, 500, 500);
@@ -255,7 +274,9 @@ static void print_samples(void) {
 }
 static void test_real_repeat_backpressure_and_release(void) {
     int64_t start = k_uptime_get();
+    atomic_set(&hold_pair, 1);
     begin_repeat();
+    __ASSERT_NO_MSG(k_sem_take(&pair_blocked, K_SECONDS(1)) == 0);
     k_msleep(65);
     __ASSERT_NO_MSG(atomic_get(&sample_count) == 2);
     check_pair(0);
@@ -266,6 +287,9 @@ static void test_real_repeat_backpressure_and_release(void) {
     __ASSERT_NO_MSG(atomic_get(&sample_count) == 2);
     struct input_event y = input(INPUT_EV_REL, INPUT_REL_Y, 0, true);
     __ASSERT_NO_MSG(process(STREAM_A, &y) == ZMK_INPUT_PROC_CONTINUE);
+    k_msleep(25);
+    __ASSERT_NO_MSG(atomic_get(&sample_count) == 2); /* route-local Y is not a raw dequeue */
+    k_sem_give(&pair_resume);
     k_msleep(25);
     __ASSERT_NO_MSG(atomic_get(&sample_count) == 4);
     check_pair(2);
@@ -339,6 +363,53 @@ static void test_partial_fifo(int reset) {
     if(reset==3) { __ASSERT_NO_MSG(padstick_set_params(padstick,&original)==0); }
     event_source=NULL;
     printk("PASS: partial real FIFO recovers one ordered pair across reset=%d without duplicate X\n",reset);
+}
+
+static void test_fully_queued_reset(void) {
+    atomic_set(&stall_fillers, 1);
+    __ASSERT_NO_MSG(input_report(repeat_sink, INPUT_EV_MSC, FIFO_FILLER, 0, false, K_NO_WAIT) == 0);
+    __ASSERT_NO_MSG(k_sem_take(&fifo_blocked, K_SECONDS(1)) == 0);
+    begin_repeat();
+    k_msleep(30);
+    __ASSERT_NO_MSG(atomic_get(&admitted_events) == 2);
+    set_other_layer(true);
+    consumed_frame(STREAM_A, 500, 500);
+    consumed_frame(STREAM_A, 510, 520);
+    moving_frame(STREAM_A, 530, 520, 20, 0);
+    moving_frame(STREAM_A, 530, 520, 20, 0); /* infer continuing contact */
+    k_msleep(65);
+    __ASSERT_NO_MSG(atomic_get(&admitted_events) == 2 && "reset admitted a second queued pair");
+    atomic_set(&stall_fillers, 0); k_sem_give(&fifo_resume);
+    k_msleep(25);
+    touch(STREAM_A, false);
+    k_msleep(30);
+    __ASSERT_NO_MSG(atomic_get(&sample_count) >= 4 && "bypassed route never acknowledged old pair");
+    print_samples();
+    set_other_layer(false); event_source = NULL;
+    printk("PASS: fully queued pair survives reset and drains outside the PadStick route\n");
+}
+
+static void test_quiet_fractional_hold(void) {
+    struct padstick_params original, p;
+    __ASSERT_NO_MSG(padstick_get_params(padstick, &original) == 0); p = original;
+    p.fixed_center = true; p.x_center = p.y_center = 512;
+    p.x_deadzone = p.y_deadzone = 80; p.x_scale = p.y_scale = 8;
+    p.x_accel_range = p.y_accel_range = 432; p.x_accel_scale = p.y_accel_scale = 39;
+    p.max_x = p.max_y = 39;
+    __ASSERT_NO_MSG(padstick_set_params(padstick, &p) == 0);
+    atomic_set(&sample_count, 0); event_source = repeat_sink;
+    touch(STREAM_A, true); consumed_frame(STREAM_A, 593, 512);
+    moving_frame(STREAM_A, 593, 512, 0, 0);
+    const int64_t started = k_uptime_get();
+    for (int i = 0; i < 750 && atomic_get(&sample_count) < 2; i++) { k_msleep(1); }
+    touch(STREAM_A, false); k_msleep(30);
+    __ASSERT_NO_MSG(atomic_get(&sample_count) == 2);
+    __ASSERT_NO_MSG(samples[0].code == INPUT_REL_X && samples[0].value == 1 && !samples[0].sync);
+    __ASSERT_NO_MSG(samples[1].code == INPUT_REL_Y && samples[1].value == 0 && samples[1].sync);
+    __ASSERT_NO_MSG(samples[0].ms >= started + 620 && samples[0].ms <= started + 620 + 32 * DIV_ROUND_UP(1000, CONFIG_SYS_CLOCK_TICKS_PER_SEC));
+    print_samples(); event_source = NULL;
+    __ASSERT_NO_MSG(padstick_set_params(padstick, &original) == 0);
+    printk("PASS: quiet fractional deflection accumulates at the real 20ms cadence\n");
 }
 
 static void test_touch_release_boundaries(void) {
@@ -445,6 +516,8 @@ static void run_tests(void *p1, void *p2, void *p3) {
     test_overdue_repeat_cancel(2);
 
     for(int reset=0;reset<4;reset++) { test_partial_fifo(reset); }
+    test_fully_queued_reset();
+    test_quiet_fractional_hold();
     test_runtime_settings();
 #if IS_ENABLED(CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS)
     test_registry_settings();

@@ -71,7 +71,7 @@ struct padstick_stream {
 	int32_t last_x;
 	int32_t last_y;
 	/*
-	 * Set when a repeat pair has been queued and not yet seen back here. The
+	 * Set while a repeat pair has been admitted and its raw Y has not drained. The
 	 * input queue is small and does not block: while the listener is held up -
 	 * a congested host link can take 100 ms over one report - a repeat every
 	 * 20 ms fills it, and whatever arrives next is dropped, the pad's own
@@ -95,6 +95,13 @@ struct padstick_data {
 	struct padstick_stream streams[PADSTICK_STREAM_COUNT];
 };
 
+/* Input callbacks can run synchronously, including from an ISR on unrelated
+ * sources. Protect only the bounded admission metadata with a spinlock; never
+ * hold it while reporting input or taking a node mutex. */
+static struct k_spinlock padstick_repeat_lock;
+static bool padstick_admit_repeat(struct padstick_stream *data);
+static void padstick_retire_repeat(struct padstick_stream *data);
+
 static void padstick_reset_contact(struct padstick_stream *data) {
 	data->origin_x = PADSTICK_COORD_UNSET;
 	data->origin_y = PADSTICK_COORD_UNSET;
@@ -104,7 +111,7 @@ static void padstick_reset_contact(struct padstick_stream *data) {
 	data->last_x = PADSTICK_COORD_UNSET;
 	data->last_y = PADSTICK_COORD_UNSET;
 	data->unsignaled_contact_frames = 0;
-	data->repeat_in_flight = data->repeat_y_pending;
+	/* Queue ownership outlives contact, layer and settings resets. */
 }
 
 /*
@@ -164,12 +171,10 @@ static void padstick_note_unsignaled_contact_frame(struct input_event *event,
 
 /* Caller holds the node lock. Never enqueue another X while this Y is owed. */
 static void padstick_complete_repeat(struct padstick_stream *data) {
-	data->repeat_in_flight = true; /* synchronous input may acknowledge inside report */
 	data->repeat_y_pending = false;
 	int ret = input_report_rel(data->repeat_dev, INPUT_REL_Y, data->repeat_y, true, K_NO_WAIT);
 	if (ret != 0) {
 		data->repeat_y_pending = true;
-		data->repeat_in_flight = true;
 		LOG_WRN("repeat REL_Y report failed: %d", ret);
 	}
 }
@@ -193,13 +198,15 @@ static void padstick_repeat_work_handler(struct k_work *work) {
 		return;
 	}
 
-	if (data->repeat_in_flight) {
+	if (!padstick_admit_repeat(data)) {
 		/* The last pair is still queued: wait for it rather than add to it. */
 		padstick_schedule_repeat(data);
 		k_mutex_unlock(&data->owner->lock);
 		return;
 	}
 
+	const int32_t old_x_remainder = data->x_remainder;
+	const int32_t old_y_remainder = data->y_remainder;
 	int32_t delta_x = padstick_offset(data->last_x, data->origin_x);
 	int32_t delta_y = padstick_offset(data->last_y, data->origin_y);
 	int32_t reach = padstick_radial_distance(delta_x, delta_y);
@@ -225,17 +232,22 @@ static void padstick_repeat_work_handler(struct k_work *work) {
 		const struct device *source = data->input_dev;
 		int ret = input_report_rel(source, INPUT_REL_X, rel_x, false, K_NO_WAIT);
 		if (ret != 0) {
+			padstick_retire_repeat(data);
 			LOG_WRN("repeat REL_X report failed: %d", ret);
 		}
 
 		if (ret == 0) {
 			data->repeat_y = rel_y;
-			data->repeat_dev = source;
 			data->repeat_y_pending = true;
 			padstick_complete_repeat(data);
 		}
-
-		/* A fresh ABS event will restart this when the finger leaves deadzone. */
+	} else {
+		padstick_retire_repeat(data);
+	}
+	/* A nonzero fractional step needs more ticks before it reaches one count.
+	 * Stop at deadzone/zero gain even if an old fraction remains. */
+	if (rel_x != 0 || rel_y != 0 || old_x_remainder != data->x_remainder ||
+	    old_y_remainder != data->y_remainder) {
 		padstick_schedule_repeat(data);
 	}
 	k_mutex_unlock(&data->owner->lock);
@@ -334,17 +346,6 @@ static int padstick_handle_event(const struct device *dev, struct input_event *e
 		data = &owner->streams[state->input_device_index];
 	}
 
-	if (event->type == INPUT_EV_REL) {
-		/* A synchronized step has reached the listener: the repeat pair in
-		 * flight, if any, has been taken off the queue. */
-		if (event->sync) {
-			k_mutex_lock(&data->owner->lock, K_FOREVER);
-			data->repeat_in_flight = false;
-			k_mutex_unlock(&data->owner->lock);
-		}
-		return ZMK_INPUT_PROC_CONTINUE;
-	}
-
 	if ((event->type != INPUT_EV_KEY && event->type != INPUT_EV_ABS) ||
 	    (event->type == INPUT_EV_KEY && event->code != INPUT_BTN_TOUCH)) {
 		return ZMK_INPUT_PROC_CONTINUE;
@@ -384,6 +385,8 @@ static int padstick_init(const struct device *dev) {
 		stream->input_dev = NULL;
 		stream->touch_active = false;
 		stream->repeat_y_pending = false;
+		stream->repeat_in_flight = false;
+		stream->repeat_dev = NULL;
 		padstick_reset_contact(stream);
 	}
 	LOG_DBG("init x: dz=%d scale=%d accel_range=%d accel_scale=%d max=%d invert=%d",
@@ -436,10 +439,8 @@ int padstick_set_params(const struct device *dev, const struct padstick_params *
         data->params = *params;
         for (size_t i = 0; i < PADSTICK_STREAM_COUNT; i++) {
             struct padstick_stream *stream = &data->streams[i];
-            const bool in_flight = stream->repeat_in_flight;
             k_work_cancel_delayable(&stream->repeat_work);
             padstick_reset_contact(stream);
-            stream->repeat_in_flight = in_flight;
             if (stream->repeat_y_pending) { padstick_schedule_repeat(stream); }
         }
     }
@@ -475,6 +476,60 @@ int padstick_set_params(const struct device *dev, const struct padstick_params *
 			      &padstick_driver_api);
 
 DT_INST_FOREACH_STATUS_OKAY(PADSTICK_INST)
+
+#define PADSTICK_DEVICE(n) DEVICE_DT_INST_GET(n),
+static const struct device *const padstick_devices[] = {
+    DT_INST_FOREACH_STATUS_OKAY(PADSTICK_DEVICE)
+};
+
+static bool padstick_admit_repeat(struct padstick_stream *data) {
+    const k_spinlock_key_t key = k_spin_lock(&padstick_repeat_lock);
+    /* Several instances/listeners can select the same absolute source across
+     * a route change. Its old pair must drain before any of them sends X. */
+    for (size_t n = 0; n < ARRAY_SIZE(padstick_devices); n++) {
+        struct padstick_data *owner = padstick_devices[n]->data;
+        for (size_t i = 0; i < PADSTICK_STREAM_COUNT; i++) {
+            const struct padstick_stream *other = &owner->streams[i];
+            if (other->repeat_in_flight && other->repeat_dev == data->input_dev) {
+                k_spin_unlock(&padstick_repeat_lock, key);
+                return false;
+            }
+        }
+    }
+    data->repeat_dev = data->input_dev;
+    data->repeat_in_flight = true;
+    k_spin_unlock(&padstick_repeat_lock, key);
+    return true;
+}
+
+static void padstick_retire_repeat(struct padstick_stream *data) {
+    const k_spinlock_key_t key = k_spin_lock(&padstick_repeat_lock);
+    data->repeat_in_flight = false;
+    k_spin_unlock(&padstick_repeat_lock, key);
+}
+
+static void padstick_repeat_ack(struct input_event *event, void *unused) {
+    ARG_UNUSED(unused);
+    if (event->type != INPUT_EV_REL || event->code != INPUT_REL_Y || !event->sync) {
+        return;
+    }
+    const k_spinlock_key_t key = k_spin_lock(&padstick_repeat_lock);
+    for (size_t n = 0; n < ARRAY_SIZE(padstick_devices); n++) {
+        struct padstick_data *owner = padstick_devices[n]->data;
+        for (size_t i = 0; i < PADSTICK_STREAM_COUNT; i++) {
+            struct padstick_stream *data = &owner->streams[i];
+            if (data->repeat_in_flight && data->repeat_dev == event->dev) {
+                data->repeat_in_flight = false;
+            }
+        }
+    }
+    k_spin_unlock(&padstick_repeat_lock, key);
+}
+/* Zephyr orders input callback sections by name. Observe the original Y before
+ * ZMK's input_handler_* callbacks transform it, even when PadStick is bypassed.
+ * Only this observer retires queued pairs; a later route cannot acknowledge a
+ * newer pair a second time. */
+INPUT_CALLBACK_DEFINE_NAMED(NULL, padstick_repeat_ack, NULL, a_padstick_repeat_ack);
 
 /**
  * Drop the origin and stop repeat output when the layer changes.
