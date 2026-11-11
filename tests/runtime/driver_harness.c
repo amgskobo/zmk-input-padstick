@@ -224,7 +224,6 @@ static void test_init_and_routing(void) {
         assert(stream(i)->x_remainder == 0 && stream(i)->y_remainder == 0);
         assert(stream(i)->unsignaled_contact_frames == 0);
     }
-    assert(owner.processor == &processor);
     for (size_t i = 0; i < PADSTICK_STREAM_COUNT; i++) {
         assert(stream(i)->owner == &owner && stream(i)->skip_origin_frame);
         assert(stream(i)->origin_x == PADSTICK_COORD_UNSET);

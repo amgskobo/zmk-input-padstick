@@ -43,14 +43,6 @@ struct padstick_stream {
 	struct k_work_delayable repeat_work;
 	struct padstick_data *owner;
 	const struct device *input_dev;
-	bool touch_active;
-	/*
-	 * A layer can switch this processor in while a contact is already down, so
-	 * it may not see that contact's BTN_TOUCH press. Two complete coordinate
-	 * frames are enough to distinguish a continuing contact from the one final
-	 * coordinate pair that normally follows BTN_TOUCH release.
-	 */
-	uint8_t unsignaled_contact_frames;
 	/*
 	 * The input callback, repeat worker and layer listener all hold lock while
 	 * changing this contact state. X and Y still arrive as separate events, so a
@@ -61,7 +53,6 @@ struct padstick_stream {
 	int32_t origin_y;
 	int32_t x_remainder;
 	int32_t y_remainder;
-	bool skip_origin_frame;
 	/*
 	 * Last raw value seen on each axis, so the other one is available when a
 	 * single axis event is being turned into a step. They arrive separately,
@@ -85,13 +76,21 @@ struct padstick_stream {
 	bool repeat_y_pending;
 	int32_t repeat_y;
 	const struct device *repeat_dev;
+	bool touch_active;
+	/*
+	 * A layer can switch this processor in while a contact is already down, so
+	 * it may not see that contact's BTN_TOUCH press. Two complete coordinate
+	 * frames are enough to distinguish a continuing contact from the one final
+	 * coordinate pair that normally follows BTN_TOUCH release.
+	 */
+	uint8_t unsignaled_contact_frames;
+	bool skip_origin_frame;
 };
 
 struct padstick_data {
 	/* One lock serializes configuration, events and repeats across this node. */
 	struct k_mutex lock;
 	struct padstick_params params;
-	const struct device *processor;
 	struct padstick_stream streams[PADSTICK_STREAM_COUNT];
 };
 
@@ -374,7 +373,6 @@ static int padstick_init(const struct device *dev) {
 		return -EINVAL;
 	}
 
-	data->processor = dev;
 	k_mutex_init(&data->lock);
 	data->params = *config;
 	for (size_t i = 0U; i < PADSTICK_STREAM_COUNT; i++) {
