@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <string.h>
 #include <zephyr/device.h>
+#include <zephyr/devicetree.h>
 #include <zmk-input-padstick/runtime.h>
 #include <zephyr/input/input.h>
 #include <zephyr/kernel.h>
@@ -26,8 +27,7 @@
 LOG_MODULE_REGISTER(zmk_input_padstick_input_processor_padstick, CONFIG_ZMK_INPUT_PADSTICK_LOG_LEVEL);
 
 #define PADSTICK_COORD_UNSET INT32_MIN
-#define PADSTICK_LISTENER_COUNT DT_NUM_INST_STATUS_OKAY(zmk_input_listener)
-#define PADSTICK_STREAM_COUNT MAX(PADSTICK_LISTENER_COUNT, 1)
+#include "padstick_sources.h"
 /*
  * A padstick is a velocity control: holding a deflection keeps emitting its
  * REL step. Keep the cadence here, rather than asking an absolute-coordinate
@@ -337,10 +337,13 @@ static int padstick_handle_event(const struct device *dev, struct input_event *e
 
 	if (state == NULL) {
 		data = &owner->streams[0];
+/* Every uint8 source index is admitted by the explicit 256-slot bound. */
+#if CONFIG_ZMK_INPUT_PADSTICK_MAX_SOURCES != 256
 	} else if (state->input_device_index >= PADSTICK_STREAM_COUNT) {
 		/* No stream of its own: pass through rather than take stream zero's, and
 		 * without a log line per event from a source that keeps sending. */
 		return ZMK_INPUT_PROC_CONTINUE;
+#endif
 	} else {
 		data = &owner->streams[state->input_device_index];
 	}

@@ -41,6 +41,30 @@ origin、小数remainder、保持方向のrepeat work、元のinput device は
 `input_device_index`ごとに独立します。設定値はnode全体で共有します。不正なruntime
 indexはログを出さずに変換せず通過し、stream 0へaliasしません。
 
+既定の `CONFIG_ZMK_INPUT_PADSTICK_MAX_SOURCES=0` は、有効なZMK input listenerの
+数だけ各nodeに状態slotを確保します（最小1）。生成DTSと直接APIを呼ぶ全箇所を調べ、
+PadStickへ到達するglobal listener indexが `0` と `1` だけなら、次を明示できます。
+
+```conf
+CONFIG_ZMK_INPUT_PADSTICK_MAX_SOURCES=2
+```
+
+正の `1..256` は、各PadStick nodeに確保するslot数であり、source indexの排他的な
+上限です。indexはglobal値のままです。使用listenerが1つでも、そのindexが `4` なら
+最低 `5` が必要です。有効なlistenerのbase/child経路が上限外のPadStickを参照すると
+コンパイルを拒否します。ZMKと同じ接続先deviceのstatus判定を使い、ZMKが全childを
+列挙するため、statusがdisabledのchild経路も検査します。直接APIの `NULL` stateは
+従来どおりslot 0、不正なruntime indexは変更せず通過します。直接APIのindexはDTSに
+現れないため、呼び出し元も必ず割り当ての確認対象にします。
+
+省いたslotごとにdelayable workを含むsource状態1つ分を節約します。正確なバイト数は
+対象kernel/ABIのリンク済みnodeサイズで確認してください。source状態が96バイト、
+global listenerが5、PadStick nodeが2、到達indexが `0/1` なら、上限 `2` により
+`(5 - 2) * 2 * 96 = 576` バイトを節約します。受け入れるsourceごとの接触、原点、
+端数、repeatの受理と中止は独立したままです。設定、出力上限、repeat周期、input queue、
+thread stackの容量は維持します。listener構成や呼び出し元を変更したら生成indexを
+再確認し、影響する全roleとresetの完全な構成を再ビルドしてください。
+
 ## Debug Logging
 
 `CONFIG_LOG=y` でZephyr loggingを有効にし、
@@ -97,7 +121,7 @@ bash ./tests/run-integration-docker.sh upstream
 bash ./tests/run-integration-docker.sh dya
 ```
 
-ホストテストは実際の非公開算術ヘッダーとドライバー全体を別々に取り込み、全ケースをASan/UBSanで実行します。fullモードでは最適化版と関数・行・分岐の完全な計測も実行します。テスト用の構造体複製や関数抽出は行いません。算術6関数とドライバー12関数をそれぞれ独立に確認します。
+ホストテストは実際の非公開算術ヘッダーとドライバー全体を別々に取り込み、全ケースをASan/UBSanで実行します。fullモードでは最適化版と関数・行・分岐の完全な計測も実行します。テスト用の構造体複製や関数抽出は行わず、算術とドライバーをそれぞれ独立に確認します。
 
 各variantで、2つのinput listenerが1つのpadstick nodeを共有するファームウェアfixtureをビルドし、
 そのZMKでnative_simのself-testを実行します。範囲外のlistener indexが変更されずに通過すること、
@@ -105,7 +129,11 @@ bash ./tests/run-integration-docker.sh dya
 レイヤ変更で原点が破棄されることを確認します。`upstream` はZMK `main`、`dya` はDYA ZMK forkを
 使います。GitHub Actions は pull request ごと、`main` への push、週次実行で両方を実行します。
 
-nativeテストは実input queueへ送る繰返しペア、制御された確認応答、接触終了・待機中レイヤー変更も検証し、同じバイナリを3回実行します。
+各variantは生成DTSのsource上限検査も行います。nativeテストは自動割り当てと上限2の
+それぞれで実input queueへ送る繰返しペア、制御された確認応答、接触終了・待機中レイヤー変更も検証し、同じバイナリを各3回実行します。
+元のinclude順序で実listener index `3/4` を維持する自動割り当てのprofileも各3回実行し、
+その生成ヘッダーに上限2を適用すると名前付きの検査で拒否することを確認します。
+低いindexと高いindexの両方で、実listener callbackを通る座標変換も検証します。
 実HID・無線の混雑試験とは分けています。詳細は [テストガイド](tests/README.md) を参照してください。
 
 ## License

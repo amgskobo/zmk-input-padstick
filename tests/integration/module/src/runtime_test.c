@@ -32,10 +32,20 @@ static const struct device *const padstick = DEVICE_DT_GET(DT_NODELABEL(padstick
 static const struct device *const repeat_sink = DEVICE_DT_GET(DT_NODELABEL(repeat_sink));
 static const struct device *event_source;
 
-#define STREAM_A 0U
-#define STREAM_B 1U
+#if DT_SAME_NODE(DT_INST(0, zmk_input_listener), DT_PATH(idle_listener_a))
+#define STREAM_A 0
+#define STREAM_B 1
+#else
+#define STREAM_A 3
+#define STREAM_B 4
+#endif
 #define NO_STREAM UINT8_MAX
 #define OTHER_LAYER 1
+
+BUILD_ASSERT(DT_SAME_NODE(DT_INST(STREAM_A, zmk_input_listener), DT_PATH(idle_listener_a)),
+             "PadStick native source A must retain its original global listener index");
+BUILD_ASSERT(DT_SAME_NODE(DT_INST(STREAM_B, zmk_input_listener), DT_PATH(idle_listener_b)),
+             "PadStick native source B must retain its original global listener index");
 
 static int process(uint8_t stream, struct input_event *event) {
     event->dev = event_source;
@@ -250,6 +260,56 @@ static void repeat_fence(struct k_work *work) {
 }
 K_WORK_DEFINE(repeat_blocker, block_repeat);
 K_WORK_DEFINE(repeat_barrier, repeat_fence);
+
+static const struct device *route_capture_source;
+static struct input_event route_sample;
+K_SEM_DEFINE(route_captured, 0, 1);
+static void capture_listener_route(struct input_event *event, void *unused) {
+    ARG_UNUSED(unused);
+    if (route_capture_source == NULL || event->dev != route_capture_source) { return; }
+    route_sample = *event;
+    k_sem_give(&route_captured);
+}
+/* Observe the event after the real input_handler_* callbacks convert it. */
+INPUT_CALLBACK_DEFINE_NAMED(NULL, capture_listener_route, NULL, z_padstick_route_capture);
+
+static void listener_event(uint8_t type, uint16_t code, int32_t value, bool sync,
+                            uint8_t expected_type, uint16_t expected_code, int32_t expected_value) {
+    __ASSERT_NO_MSG(input_report(route_capture_source, type, code, value, sync, K_FOREVER) == 0);
+    __ASSERT_NO_MSG(k_sem_take(&route_captured, K_SECONDS(1)) == 0);
+    __ASSERT_NO_MSG(route_sample.type == expected_type && route_sample.code == expected_code);
+    __ASSERT_NO_MSG(route_sample.value == expected_value && route_sample.sync == sync);
+}
+
+static void test_actual_listener_routes(void) {
+    struct input_event unrelated = input(INPUT_EV_MSC, 0, 0, false);
+    capture_listener_route(&unrelated, NULL);
+    __ASSERT_NO_MSG(k_sem_count_get(&route_captured) == 0);
+    /* Keep repeating work behind this fence while the real input queue drives
+     * each declared source; release cancels it before the queue is unblocked. */
+    __ASSERT_NO_MSG(k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &repeat_blocker) >= 0);
+    __ASSERT_NO_MSG(k_sem_take(&repeat_blocked, K_SECONDS(1)) == 0);
+    static const struct device *const sources[] = {
+        DEVICE_DT_GET(DT_NODELABEL(idle_source_a)), DEVICE_DT_GET(DT_NODELABEL(idle_source_b)),
+    };
+    for (size_t n = 0; n < ARRAY_SIZE(sources); n++) {
+        route_capture_source = sources[n];
+        listener_event(INPUT_EV_KEY, INPUT_BTN_TOUCH, 1, false, INPUT_EV_KEY, INPUT_BTN_TOUCH, 1);
+        for (int frame = 0; frame < 2; frame++) {
+            listener_event(INPUT_EV_ABS, INPUT_ABS_X, 500, false, INPUT_EV_MSC, INPUT_MSC_SCAN, 0);
+            listener_event(INPUT_EV_ABS, INPUT_ABS_Y, 500, true, INPUT_EV_MSC, INPUT_MSC_SCAN, 0);
+        }
+        listener_event(INPUT_EV_ABS, INPUT_ABS_X, 520, false, INPUT_EV_REL, INPUT_REL_X, 20);
+        listener_event(INPUT_EV_ABS, INPUT_ABS_Y, 500, true, INPUT_EV_REL, INPUT_REL_Y, 0);
+        listener_event(INPUT_EV_KEY, INPUT_BTN_TOUCH, 0, true, INPUT_EV_KEY, INPUT_BTN_TOUCH, 0);
+    }
+    route_capture_source = NULL;
+    k_sem_give(&repeat_resume);
+    __ASSERT_NO_MSG(k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &repeat_barrier) >= 0);
+    __ASSERT_NO_MSG(k_sem_take(&repeat_drained, K_SECONDS(1)) == 0);
+    printk("PASS: real listener callbacks preserve PadStick global source IDs %u/%u\n",
+           (unsigned)STREAM_A, (unsigned)STREAM_B);
+}
 
 static void begin_repeat(void) {
     atomic_set(&sample_count, 0);
@@ -499,12 +559,13 @@ static void run_tests(void *p1, void *p2, void *p3) {
 
     __ASSERT_NO_MSG(device_is_ready(padstick));
     /* The test board brings listeners of its own; two streams are all these tests need. */
-    __ASSERT_NO_MSG(DT_NUM_INST_STATUS_OKAY(zmk_input_listener) >= 2);
+    __ASSERT_NO_MSG(DT_NUM_INST_STATUS_OKAY(zmk_input_listener) == 5);
 
 #if IS_ENABLED(CONFIG_ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS)
     if (verify_reloaded_settings()) { printk("padstick runtime tests: PASS\n"); exit(0); }
 #endif
     test_invalid_stream_passes_through();
+    test_actual_listener_routes();
     test_touch_release_boundaries();
     test_streams_are_independent();
     test_buttons_stay_transparent();

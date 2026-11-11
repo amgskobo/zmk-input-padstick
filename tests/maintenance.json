@@ -43,5 +43,12 @@
     "contract": "Quiet fractional progress; deadzone/zero-gain stop; fully queued ownership across reset, source isolation, route-independent raw-Y acknowledgement and no late double acknowledgement",
     "negative": "Unmodified prior driver must fail both named behavioral assertions",
     "limits": "Real queues/API plus controlled callbacks; no physical HID/sensor acceptance"
+  },
+  "source_allocation_bound": {
+    "contract": "Automatic0 preserves one slot per enabled global listener (minimum1); positive1..256 is an exclusive original-source-index bound per node, no remapping. Exact upstream device-status gate and base/all-child routes reject referenced sparse overflow at compile time. NULL/invalid-runtime behavior and admitted independent source state remain.",
+    "host": "tests/test_source_limits.py: actual full driver ASan+UBSan; full adds O2/m32; automatic2/5, bound2/256/1, no-listener fallback, highest index, NULL and invalid unchanged event/state",
+    "dts": "tests/integration/source-limits.py:42 actual Zephyr-generator compile cases per core with named range/sparse/base/child/disabled-child rejections, device/listener status semantics and skip-routes/skip-children controls",
+    "kernel": "Both full integration entries retain all native/registry/NVS cases and run automatic5 and limited2 binaries three times each at actual source IDs0/1. An additional original-order automatic5 profile retains actual IDs3/4, every original assertion and actual input-listener callbacks; its generated header must reject bound2 by the named guard. All mouse behaviors remain enabled.",
+    "limits": "No physical HID/timing/power/live stack-high-water acceptance; linked slot sizes and compiler frames are static evidence."
   }
 }

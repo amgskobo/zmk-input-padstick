@@ -10,6 +10,20 @@ config ZMK_INPUT_PROCESSOR_PADSTICK
 	depends on (!ZMK_SPLIT || ZMK_SPLIT_ROLE_CENTRAL)
 	select ZMK_LOW_PRIORITY_WORK_QUEUE
 
+config ZMK_INPUT_PADSTICK_MAX_SOURCES
+    int "PadStick source index allocation bound (0 = automatic)"
+    default 0
+    range 0 256
+    depends on ZMK_INPUT_PROCESSOR_PADSTICK
+    help
+      Zero keeps one independent state slot per enabled ZMK input listener,
+      with at least one slot. A positive value allocates that many slots per
+      PadStick node, indexed by the original global listener index. It must
+      exceed every listener index that can select PadStick, including child
+      routes. Builds reject a referenced listener outside the bound. Direct
+      API callers must also use an index within the selected bound; NULL state
+      selects slot zero and an out-of-range index still passes through.
+
 config ZMK_INPUT_PADSTICK_CUSTOM_SETTINGS
     bool "Publish PadStick tuning through custom settings"
     depends on ZMK_INPUT_PROCESSOR_PADSTICK

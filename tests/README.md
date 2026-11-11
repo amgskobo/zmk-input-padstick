@@ -153,3 +153,51 @@ This compiles the same owner assertions with the current and unmodified prior
 driver; both prior fractional-hold and queued-reset cases must fail at their
 named behavioral assertions. Production callback order is checked in linked
 native and firmware symbols: the raw observer precedes ZMK input handlers.
+
+## Source allocation bound
+
+`CONFIG_ZMK_INPUT_PADSTICK_MAX_SOURCES=0` preserves the automatic global-listener
+allocation (minimum one). Positive `1..256` values preserve global source
+indices and must cover every reachable listener and direct API caller.
+`test_source_limits.py` compiles the actual complete driver with automatic two
+and five sources, bound two, the full 256-index domain and one-slot/no-listener
+fallbacks. Quick runs ASan/UBSan; full also runs O2 and 32-bit ABI variants.
+Every allocation of at least two slots runs every existing complete-driver
+assertion, including fractional motion, source isolation, pending/partial pairs,
+raw acknowledgement and touch/layer/settings cancellation. One-slot probes use
+the same driver/service stand-ins without compiling two-source scenarios.
+NULL source zero, the highest admitted index and invalid-index byte/state
+transparency have independent assertions. No invalid uint8 index exists at 256.
+
+Each integration variant calls `integration/source-limits.py` against that
+core's original binding and Zephyr generator. Its 42 compile cases cover base,
+child, disabled child, disabled device, disabled listener and no-listener
+topologies at automatic/1/2/3/256/-1/257 bounds. Sparse global index 2 must be
+rejected by bound 1/2 even though only one route refers to PadStick. Disabled
+child routes are included because upstream enumerates all children; disabled
+listener/device paths follow upstream's status gate. Other processor phandles
+precede PadStick to verify traversal beyond the first element.
+
+```sh
+python3 tests/integration/source-limits.py /resolved/workspace --output /fresh/dts
+python3 tests/integration/source-limits.py /resolved/workspace \
+  --output /fresh/control --negative-control skip-routes # must fail: base/1
+python3 tests/integration/source-limits.py /resolved/workspace \
+  --output /fresh/child-control --negative-control skip-children # must fail: child/1
+```
+
+These controls qualify only at their named missing-rejection diagnostics.
+The unchanged original driver is separately compiled with
+`-DPADSTICK_DRIVER_SOURCE='"/original/src/input_processor_padstick.c"'`,
+`TEST_LISTENER_COUNT=5`, bound 2 and `EXPECTED_STREAMS=2`; it must compile and
+then fail the named allocation assertion, not a compiler/setup error.
+The real native fixture has two PadStick listeners plus three unrelated
+listeners. Both supported-core entries run automatic five-slot and limited
+two-slot binaries three times each. An additional automatic five-slot profile
+preserves the original include order and global source IDs 3/4. It runs every
+original assertion at those actual indices, plus real listener-callback checks;
+the low-index profiles check actual IDs 0/1. `check-source-bound.py` asserts each
+mapping against the generated header and requires a named bound-two rejection
+for the original higher-index profile. DYA retains every registry/NVS boot/reload
+case in all three configurations. Compiler frames and linked node sizes are static
+evidence; they do not measure live stack high-water or physical HID delivery.

@@ -93,6 +93,12 @@ echo "PASS: $variant firmware fixture"
 
 ZMK_TEST_OUTPUT="$work_dir/guards" bash /src/tests/integration/guards/run.sh "$workspace"
 
+python3 /src/tests/integration/source-limits.py "$workspace" --output "$work_dir/source-limits"
+
 ZMK_TEST_OUTPUT="$work_dir/native" bash /src/tests/run-native.sh "$workspace"
+ZMK_TEST_PADSTICK_MAX_SOURCES=2 ZMK_TEST_OUTPUT="$work_dir/native-limited" \
+    bash /src/tests/run-native.sh "$workspace"
+ZMK_TEST_PADSTICK_ORIGINAL_ORDER=1 ZMK_TEST_OUTPUT="$work_dir/native-original-order" \
+    bash /src/tests/run-native.sh "$workspace"
 
 echo "padstick $variant integration: PASS"

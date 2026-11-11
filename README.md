@@ -159,6 +159,36 @@ original input device are isolated by
 `input_device_index`. Settings remain node-wide. An invalid runtime index is
 passed through without a log line and never aliases stream zero.
 
+The default `CONFIG_ZMK_INPUT_PADSTICK_MAX_SOURCES=0` reserves one state slot
+per enabled ZMK input listener, with at least one slot. A keyboard may opt into
+a smaller allocation after checking its generated DTS and every direct API
+caller. For example, if only global listener indices `0` and `1` can select
+PadStick, use:
+
+```conf
+CONFIG_ZMK_INPUT_PADSTICK_MAX_SOURCES=2
+```
+
+A positive value `1..256` is an exclusive source-index bound, in slots per
+PadStick node. Indices keep their original global values: one listener at index
+`4` requires at least `5`, even if it is the only listener using PadStick.
+Compilation rejects references outside the bound in an active listener's base
+or child routes. This follows ZMK's attached-device status gate and includes
+disabled child routes because ZMK enumerates every child. A direct caller's
+`NULL` state continues to select slot zero; an out-of-range runtime index
+continues to pass through unchanged. Direct callers must be included in the
+allocation audit because their indices are not described by DTS.
+
+Each omitted slot saves one complete source state, including its delayable
+work item. Exact bytes depend on the target's kernel/ABI; inspect the linked
+node sizes. With a 96-byte source state, five global listeners, two PadStick
+nodes and reachable indices `0/1`, the opt-in bound `2` saves
+`(5 - 2) * 2 * 96 = 576` bytes. All admitted sources retain their independent
+contact, origin, fractional remainders, repeat admission and cancellation.
+Settings, output limits, repeat cadence, input queue and thread stacks keep
+their existing capacities. Recheck the generated indices and rebuild the
+complete affected role/reset graph whenever listener topology or callers change.
+
 ## Debug Logging
 
 Enable Zephyr logging with `CONFIG_LOG=y` and set this module's level to
@@ -242,10 +272,14 @@ checks. Test stand-ins provide Zephyr services without duplicating PadStick
 state layouts or exporting production functions. See [the ownership map](tests/README.md).
 
 Each integration variant builds an ARM firmware fixture in which two listeners
-share one node, then runs the same native binary three times. Native assertions
+share one node, compiles generated-DTS source-bound controls, then runs each
+automatic and limited native binary three times. A third automatic profile
+preserves the original higher listener indices `3/4` and requires a named
+bound-two rejection against that profile's actual generated header. Native assertions
 cover independent contacts/origins, transparent button payloads and sync, layer
 resets, real input-queue repeat admission with controlled acknowledgements, and
-overdue work cancellation. These are kernel/API checks; physical HID/radio
+overdue work cancellation, and actual listener callbacks at both low and higher
+global indices. These are kernel/API checks; physical HID/radio
 congestion and board timing require separate evidence.
 
 ## License

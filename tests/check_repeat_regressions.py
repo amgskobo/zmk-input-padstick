@@ -19,6 +19,8 @@ for label in ('current', 'baseline'):
     source=(root/relative).read_bytes() if label=='current' else subprocess.check_output(['git','show',args.baseline_revision+':'+relative],cwd=root)
     (work/relative).write_bytes(source)
     shutil.copyfile(root/'src/padstick_math.h',work/'src/padstick_math.h')
+    shutil.copyfile(root/'src/padstick_sources.h',work/'src/padstick_sources.h')
+    shutil.copyfile(root/'tests/runtime/driver_support.h',work/'tests/runtime/driver_support.h')
     shutil.copyfile(root/'tests/runtime/driver_harness.c',work/'tests/runtime/driver_harness.c')
     binary=work/'driver'
     command=['cc','-std=c11','-Wall','-Wextra','-Werror','-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all','-I'+str(root/'tests/support'),'-I'+str(root/'include')]
